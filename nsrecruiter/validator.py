@@ -11,7 +11,7 @@ from nsrecruiter.api.client import NsApiClient
 from nsrecruiter.api.exceptions import NsApiError
 from nsrecruiter.api.shards import fetch_tgcanrecruit, fetch_tgcanrecruit_and_flag, flag_matches_presets
 from nsrecruiter.config import Config
-from nsrecruiter.models import extract_name_base, significant_name_tokens
+from nsrecruiter.models import MIN_SHARED_NAME_TOKENS, extract_name_base, significant_name_tokens
 from nsrecruiter.utils import utc_now_iso
 
 logger = logging.getLogger("nsrecruiter.validator")
@@ -53,7 +53,6 @@ def _alt_lookback_cutoff_iso() -> str:
 # Janela curta (1h, nao dias) e exigir 2+ palavras (nao 1) foi decidido com o
 # utilizador para minimizar o risco de rejeitar coincidencias entre jogadores reais.
 _BATCH_TOKEN_LOOKBACK_MINUTES = 60.0
-_MIN_SHARED_TOKENS = 2
 _BATCH_TOKEN_REJECTION_REASON = (
     f"provavel lote gerado (2+ palavras do nome repetidas nos ultimos "
     f"{int(_BATCH_TOKEN_LOOKBACK_MINUTES):d} min)"
@@ -109,7 +108,7 @@ async def _validate_one(
             nation_id,
             _batch_token_lookback_cutoff_iso(),
             row["discovered_at"],
-            _MIN_SHARED_TOKENS,
+            MIN_SHARED_NAME_TOKENS,
         )
         if shared_count > 0:
             tokens_detail = ",".join(sorted(tokens))

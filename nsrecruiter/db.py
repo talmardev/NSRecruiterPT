@@ -195,6 +195,56 @@ def count_targets_sharing_tokens_since(
     return len(rows)
 
 
+def find_queued_token_share_pairs(
+    connection: sqlite3.Connection, min_shared_tokens: int
+) -> list[tuple[str, str, str, str, frozenset[str]]]:
+    """Pares de nacoes atualmente na fila (status='queued') que partilham pelo menos
+    `min_shared_tokens` palavras significativas -- sem limite de tempo, ao contrario
+    da deteçao automatica (so olha para a ultima hora). Usado pela analise manual da
+    fila (tecla 'a' no ecra de revisao), para sugerir padroes ainda nao apanhados
+    pelos filtros automaticos (ex: um lote mais espacado no tempo)."""
+    rows = connection.execute(
+        """
+        SELECT a.nation_id AS a_id, ta.nation_name AS a_name,
+               b.nation_id AS b_id, tb.nation_name AS b_name,
+               a.token AS token
+        FROM target_name_tokens a
+        JOIN target_name_tokens b ON a.token = b.token AND a.nation_id < b.nation_id
+        JOIN targets ta ON ta.nation_id = a.nation_id
+        JOIN targets tb ON tb.nation_id = b.nation_id
+        WHERE ta.status = ? AND tb.status = ?
+        """,
+        (TargetStatus.QUEUED.value, TargetStatus.QUEUED.value),
+    ).fetchall()
+
+    grouped: dict[tuple[str, str, str, str], set[str]] = {}
+    for row in rows:
+        key = (row["a_id"], row["a_name"], row["b_id"], row["b_name"])
+        grouped.setdefault(key, set()).add(row["token"])
+
+    return [
+        (a_id, a_name, b_id, b_name, frozenset(tokens))
+        for (a_id, a_name, b_id, b_name), tokens in grouped.items()
+        if len(tokens) >= min_shared_tokens
+    ]
+
+
+def reject_targets_as_heuristic(
+    connection: sqlite3.Connection, nation_ids: Iterable[str], reason: str, detail: str, now_iso: str
+) -> int:
+    """Rejeita em bloco os alvos indicados (usado ao confirmar uma sugestao da analise
+    manual da fila). So afeta quem ainda estiver 'queued' nesse momento -- protege
+    contra a rara corrida com o emissor a despachar um deles entretanto. Devolve
+    quantos foram mesmo rejeitados."""
+    count = 0
+    for nation_id in nation_ids:
+        row = connection.execute("SELECT status FROM targets WHERE nation_id = ?", (nation_id,)).fetchone()
+        if row is not None and row["status"] == TargetStatus.QUEUED.value:
+            mark_target_rejected(connection, nation_id, reason, now_iso, heuristic=True, detail=detail)
+            count += 1
+    return count
+
+
 def next_discovered_target(connection: sqlite3.Connection) -> sqlite3.Row | None:
     return connection.execute(
         "SELECT * FROM targets WHERE status = ? ORDER BY discovered_at ASC LIMIT 1",

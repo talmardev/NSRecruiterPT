@@ -41,6 +41,11 @@ def extract_name_base(nation_id: str) -> str:
     return stripped or nation_id
 
 
+# Partilhado entre a deteçao automatica (validator.py, janela de 1h) e a analise
+# manual da fila (dashboard.py, sem limite de tempo) -- o mesmo limiar qualitativo
+# para o que conta como sobreposicao suspeita de palavras.
+MIN_SHARED_NAME_TOKENS = 2
+
 _MIN_SIGNIFICANT_TOKEN_LENGTH = 4
 
 

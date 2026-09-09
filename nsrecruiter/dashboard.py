@@ -26,7 +26,7 @@ from nsrecruiter.collector import force_refresh
 from nsrecruiter.config import Config
 from nsrecruiter.keyboard import read_keys
 from nsrecruiter.logging_setup import LogEntry
-from nsrecruiter.models import AppState, TargetStatus
+from nsrecruiter.models import MIN_SHARED_NAME_TOKENS, AppState, TargetStatus
 from nsrecruiter.runtime_status import RuntimeStatus
 from nsrecruiter.utils import iso_to_unix_timestamp, utc_now_iso
 
@@ -98,8 +98,11 @@ class DashboardState:
 
     pattern_rejected_total: int
     rejection_review_active: bool
+    rejection_review_mode: str  # "rejected" ou "suggestions"
     rejection_clusters: list[sqlite3.Row]
     rejection_selected_key: tuple[str, str | None] | None
+    suggested_clusters: list[dict]
+    suggestion_selected_key: tuple[str, ...] | None
 
     now_unix: float
 
@@ -115,10 +118,14 @@ class _QueueViewState:
 
 @dataclass
 class _RejectionReviewState:
-    """Estado do modo de revisao de rejeicoes por deteçao de padroes (tecla 'v')."""
+    """Estado do modo de revisao de rejeicoes por deteçao de padroes (tecla 'v').
+    'mode' alterna entre "rejected" (clusters ja confirmados) e "suggestions"
+    (analise manual da fila atual, tecla 'a'), cada um com a sua propria selecao."""
 
     active: bool = False
-    selected_key: tuple[str, str | None] | None = None
+    mode: str = "rejected"
+    selected_rejected_key: tuple[str, str | None] | None = None
+    selected_suggestion_key: tuple[str, ...] | None = None
 
 
 def _format_mmss(seconds: float) -> str:
@@ -194,7 +201,9 @@ def gather_state(
     queue_view_active: bool = False,
     queue_selected_nation_id: str | None = None,
     rejection_review_active: bool = False,
+    rejection_review_mode: str = "rejected",
     rejection_selected_key: tuple[str, str | None] | None = None,
+    suggestion_selected_key: tuple[str, ...] | None = None,
 ) -> DashboardState:
     sent_today = db.count_sent_since(connection, _today_start_iso())
     sent_total = db.count_sent_total(connection)
@@ -219,6 +228,11 @@ def gather_state(
     elif app_state is AppState.BLOCKED:
         blocked_seconds = tg_limiter.seconds_until_next_send()
         blocked_reason = "uso externo da chave"
+
+    suggested_clusters: list[dict] = []
+    if rejection_review_active and rejection_review_mode == "suggestions":
+        pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)
+        suggested_clusters = _cluster_token_share_pairs(pairs)
 
     return DashboardState(
         region=config.region,
@@ -249,8 +263,15 @@ def gather_state(
         queue_selected_nation_id=queue_selected_nation_id,
         pattern_rejected_total=pattern_rejected_total,
         rejection_review_active=rejection_review_active,
-        rejection_clusters=db.list_rejection_clusters(connection, "heuristic") if rejection_review_active else [],
+        rejection_review_mode=rejection_review_mode,
+        rejection_clusters=(
+            db.list_rejection_clusters(connection, "heuristic")
+            if rejection_review_active and rejection_review_mode == "rejected"
+            else []
+        ),
         rejection_selected_key=rejection_selected_key,
+        suggested_clusters=suggested_clusters,
+        suggestion_selected_key=suggestion_selected_key,
         now_unix=time.time(),
     )
 
@@ -462,6 +483,122 @@ def _render_rejection_review(state: DashboardState) -> Panel:
     return Panel(table, title=title, border_style="grey50")
 
 
+def _cluster_token_share_pairs(pairs: list[tuple[str, str, str, str, frozenset[str]]]) -> list[dict]:
+    """Agrupa pares de nacoes que partilham palavras (de find_queued_token_share_pairs)
+    em clusters por componentes conectados -- ex: se A-B partilham {grand,prix} e B-C
+    tambem, A/B/C ficam no mesmo cluster mesmo que A e C nunca tenham sido comparadas
+    diretamente. Devolve uma lista de {tokens, nation_ids, names}."""
+    parent: dict[str, str] = {}
+    names: dict[str, str] = {}
+    tokens_by_node: dict[str, set[str]] = {}
+
+    def find(node: str) -> str:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent.get(parent[node], parent[node])
+            node = parent[node]
+        return node
+
+    def union(a: str, b: str) -> None:
+        root_a, root_b = find(a), find(b)
+        if root_a != root_b:
+            parent[root_a] = root_b
+
+    for a_id, a_name, b_id, b_name, tokens in pairs:
+        names[a_id] = a_name
+        names[b_id] = b_name
+        tokens_by_node.setdefault(a_id, set()).update(tokens)
+        tokens_by_node.setdefault(b_id, set()).update(tokens)
+        union(a_id, b_id)
+
+    groups: dict[str, list[str]] = {}
+    for node in names:
+        groups.setdefault(find(node), []).append(node)
+
+    clusters = []
+    for nation_ids in groups.values():
+        all_tokens: set[str] = set()
+        for node in nation_ids:
+            all_tokens |= tokens_by_node[node]
+        sorted_ids = sorted(nation_ids)
+        clusters.append(
+            {
+                "tokens": frozenset(all_tokens),
+                "nation_ids": sorted_ids,
+                "names": {nid: names[nid] for nid in sorted_ids},
+            }
+        )
+    clusters.sort(key=lambda cluster: cluster["nation_ids"])
+    return clusters
+
+
+def _suggestion_key(cluster: dict) -> tuple[str, ...]:
+    return tuple(cluster["nation_ids"])
+
+
+def _move_suggestion_selection(
+    clusters: list[dict], selected_key: tuple[str, ...] | None, delta: int
+) -> tuple[str, ...] | None:
+    """Equivalente a _move_selection, mas para os clusters sugeridos pela analise
+    manual da fila (chave = tuplo ordenado dos nation_ids do cluster)."""
+    if not clusters:
+        return None
+    current_index = next(
+        (index for index, cluster in enumerate(clusters) if _suggestion_key(cluster) == selected_key), 0
+    )
+    new_index = max(0, min(current_index + delta, len(clusters) - 1))
+    return _suggestion_key(clusters[new_index])
+
+
+def _visible_suggestion_window(
+    clusters: list[dict], selected_key: tuple[str, ...] | None, window_size: int
+) -> tuple[list[dict], int]:
+    """Equivalente a _visible_queue_window, mas para os clusters sugeridos."""
+    if not clusters:
+        return [], -1
+    selected_index = next(
+        (index for index, cluster in enumerate(clusters) if _suggestion_key(cluster) == selected_key), 0
+    )
+    if len(clusters) <= window_size:
+        return list(clusters), selected_index
+    half = window_size // 2
+    start = max(0, min(selected_index - half, len(clusters) - window_size))
+    return list(clusters[start : start + window_size]), selected_index - start
+
+
+def _render_suggestions(state: DashboardState) -> Panel:
+    title = "Sugestoes da analise da fila (ainda nao aplicadas)"
+    if not state.suggested_clusters:
+        return Panel(
+            Text("(nenhum padrao novo encontrado na fila atual)", style="dim"),
+            title=title, border_style="grey50",
+        )
+
+    visible, selected_index = _visible_suggestion_window(
+        state.suggested_clusters, state.suggestion_selected_key, _BROWSE_VISIBLE_ROWS
+    )
+
+    table = Table.grid(padding=(0, 1), expand=True)
+    table.add_column(width=1)
+    table.add_column(ratio=1)
+    table.add_column(ratio=2)
+    table.add_column(justify="right")
+
+    for offset, cluster in enumerate(visible):
+        is_selected = offset == selected_index
+        tokens_text = ",".join(sorted(cluster["tokens"]))
+        names_text = ", ".join(cluster["names"][nid] for nid in cluster["nation_ids"])
+        table.add_row(
+            ">" if is_selected else "",
+            tokens_text,
+            names_text,
+            str(len(cluster["nation_ids"])),
+            style="bold cyan" if is_selected else None,
+        )
+
+    return Panel(table, title=title, border_style="grey50")
+
+
 def _render_log(state: DashboardState) -> Panel:
     lines: list[Text] = []
     for entry in state.log_entries:
@@ -487,11 +624,24 @@ def _render_footer(mode: str) -> Panel:
         text.append(" sair da fila     ")
         text.append(" q ", style="bold black on grey70")
         text.append(" sair do programa")
-    elif mode == "rejection":
+    elif mode == "rejected":
         text.append(" cima/baixo ", style="bold black on grey70")
         text.append(" mover     ")
         text.append(" Enter ", style="bold black on grey70")
         text.append(" repor grupo na fila     ")
+        text.append(" a ", style="bold black on grey70")
+        text.append(" analisar fila     ")
+        text.append(" Esc/v ", style="bold black on grey70")
+        text.append(" sair da revisao     ")
+        text.append(" q ", style="bold black on grey70")
+        text.append(" sair do programa")
+    elif mode == "suggestions":
+        text.append(" cima/baixo ", style="bold black on grey70")
+        text.append(" mover     ")
+        text.append(" Enter ", style="bold black on grey70")
+        text.append(" rejeitar grupo     ")
+        text.append(" a ", style="bold black on grey70")
+        text.append(" ver confirmadas     ")
         text.append(" Esc/v ", style="bold black on grey70")
         text.append(" sair da revisao     ")
         text.append(" q ", style="bold black on grey70")
@@ -530,8 +680,11 @@ def render(layout: Layout, state: DashboardState) -> None:
         footer_mode = "queue"
     elif state.rejection_review_active:
         layout["body"].split_column(Layout(name="rejection_review"))
-        layout["body"]["rejection_review"].update(_render_rejection_review(state))
-        footer_mode = "rejection"
+        if state.rejection_review_mode == "suggestions":
+            layout["body"]["rejection_review"].update(_render_suggestions(state))
+        else:
+            layout["body"]["rejection_review"].update(_render_rejection_review(state))
+        footer_mode = state.rejection_review_mode
     else:
         layout["body"].split_row(Layout(name="limits"), Layout(name="stats"))
         layout["body"]["limits"].update(_render_limits(state))
@@ -564,9 +717,21 @@ async def run_dashboard(
 
     def _enter_rejection_review() -> None:
         queue_view.active = False
+        rejection_review.mode = "rejected"
         clusters = db.list_rejection_clusters(connection, "heuristic")
         rejection_review.active = True
-        rejection_review.selected_key = _cluster_key(clusters[0]) if clusters else None
+        rejection_review.selected_rejected_key = _cluster_key(clusters[0]) if clusters else None
+
+    def _enter_suggestions_mode() -> None:
+        rejection_review.mode = "suggestions"
+        pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)
+        clusters = _cluster_token_share_pairs(pairs)
+        rejection_review.selected_suggestion_key = _suggestion_key(clusters[0]) if clusters else None
+
+    def _enter_rejected_mode() -> None:
+        rejection_review.mode = "rejected"
+        clusters = db.list_rejection_clusters(connection, "heuristic")
+        rejection_review.selected_rejected_key = _cluster_key(clusters[0]) if clusters else None
 
     def on_key(char: str) -> None:
         if queue_view.active:
@@ -589,14 +754,49 @@ async def run_dashboard(
                 runtime_status.request_shutdown()
             return
 
+        if rejection_review.active and rejection_review.mode == "suggestions":
+            if char in ("UP", "DOWN"):
+                pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)
+                clusters = _cluster_token_share_pairs(pairs)
+                rejection_review.selected_suggestion_key = _move_suggestion_selection(
+                    clusters, rejection_review.selected_suggestion_key, -1 if char == "UP" else 1
+                )
+            elif char == "ENTER" and rejection_review.selected_suggestion_key is not None:
+                pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)
+                clusters = _cluster_token_share_pairs(pairs)
+                match = next(
+                    (c for c in clusters if _suggestion_key(c) == rejection_review.selected_suggestion_key), None
+                )
+                if match is not None:
+                    tokens_detail = ",".join(sorted(match["tokens"]))
+                    rejected = db.reject_targets_as_heuristic(
+                        connection, match["nation_ids"],
+                        "provavel padrao novo (deteccao manual na fila)", tokens_detail, utc_now_iso(),
+                    )
+                    logger.info(
+                        "Rejeitadas %d nacao(oes) por padrao detetado manualmente (palavras: %s).",
+                        rejected, tokens_detail,
+                    )
+                pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)
+                clusters = _cluster_token_share_pairs(pairs)
+                rejection_review.selected_suggestion_key = _suggestion_key(clusters[0]) if clusters else None
+            elif char.lower() == "a":
+                _enter_rejected_mode()
+            elif char == "ESC" or char.lower() == "v":
+                rejection_review.active = False
+            elif char.lower() == "q":
+                logger.info("Saida pedida (tecla q); a terminar o envio em curso, se houver algum.")
+                runtime_status.request_shutdown()
+            return
+
         if rejection_review.active:
             if char in ("UP", "DOWN"):
                 clusters = db.list_rejection_clusters(connection, "heuristic")
-                rejection_review.selected_key = _move_cluster_selection(
-                    clusters, rejection_review.selected_key, -1 if char == "UP" else 1
+                rejection_review.selected_rejected_key = _move_cluster_selection(
+                    clusters, rejection_review.selected_rejected_key, -1 if char == "UP" else 1
                 )
-            elif char == "ENTER" and rejection_review.selected_key is not None:
-                status_reason, detail = rejection_review.selected_key
+            elif char == "ENTER" and rejection_review.selected_rejected_key is not None:
+                status_reason, detail = rejection_review.selected_rejected_key
                 reverted = db.revert_targets_by_rejection_group(connection, status_reason, detail, utc_now_iso())
                 logger.info(
                     "Repostas %d nacao(oes) do grupo '%s' (%s) para revalidar.",
@@ -605,7 +805,9 @@ async def run_dashboard(
                     detail or "-",
                 )
                 clusters = db.list_rejection_clusters(connection, "heuristic")
-                rejection_review.selected_key = _cluster_key(clusters[0]) if clusters else None
+                rejection_review.selected_rejected_key = _cluster_key(clusters[0]) if clusters else None
+            elif char.lower() == "a":
+                _enter_suggestions_mode()
             elif char == "ESC" or char.lower() == "v":
                 rejection_review.active = False
             elif char.lower() == "q":
@@ -636,7 +838,9 @@ async def run_dashboard(
                     dry_run, queue_view_active=queue_view.active,
                     queue_selected_nation_id=queue_view.selected_nation_id,
                     rejection_review_active=rejection_review.active,
-                    rejection_selected_key=rejection_review.selected_key,
+                    rejection_review_mode=rejection_review.mode,
+                    rejection_selected_key=rejection_review.selected_rejected_key,
+                    suggestion_selected_key=rejection_review.selected_suggestion_key,
                 )
                 render(layout, state)
                 live.refresh()
