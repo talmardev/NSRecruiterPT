@@ -229,6 +229,32 @@ def find_queued_token_share_pairs(
     ]
 
 
+def find_queued_name_base_clusters(
+    connection: sqlite3.Connection, min_base_length: int, min_cluster_size: int = 2
+) -> list[sqlite3.Row]:
+    """Nacoes atualmente na fila (status='queued') cuja base de nome (sem sufixo
+    numerico, ex: 'yamagoochie0065' e 'yamagoochie65' -> 'yamagoochie') e partilhada
+    por pelo menos `min_cluster_size` alvos -- mesma logica da deteçao automatica
+    (validator.py), mas sem limite de tempo e reaplicada a quem ja esta na fila (ex:
+    passou a validacao antes desta deteçao existir, ou nao foi apanhado por outra
+    razao). Usado pela analise manual da fila (tecla 'a' no ecra de revisao)."""
+    return connection.execute(
+        """
+        SELECT name_base, nation_id, nation_name FROM targets
+        WHERE status = ? AND length(name_base) >= ? AND name_base IN (
+            SELECT name_base FROM targets
+            WHERE status = ? AND length(name_base) >= ?
+            GROUP BY name_base HAVING COUNT(*) >= ?
+        )
+        ORDER BY name_base
+        """,
+        (
+            TargetStatus.QUEUED.value, min_base_length,
+            TargetStatus.QUEUED.value, min_base_length, min_cluster_size,
+        ),
+    ).fetchall()
+
+
 def reject_targets_as_heuristic(
     connection: sqlite3.Connection, nation_ids: Iterable[str], reason: str, detail: str, now_iso: str
 ) -> int:
@@ -379,6 +405,43 @@ def toggle_target_pin(connection: sqlite3.Connection, nation_id: str, now_iso: s
         (new_pinned_at, now_iso, nation_id),
     )
     return new_pinned_at is not None
+
+
+def list_expired_unprioritized_queued_targets(connection: sqlite3.Connection, cutoff_iso: str) -> list[sqlite3.Row]:
+    """Alvos 'queued' sem prioridade (bandeira) nem fixacao manual, em fila desde antes
+    de `cutoff_iso` -- saem aos 6h por omissao."""
+    return connection.execute(
+        "SELECT nation_id, nation_name FROM targets "
+        "WHERE status = ? AND priority = 0 AND pinned_at IS NULL AND queued_at <= ?",
+        (TargetStatus.QUEUED.value, cutoff_iso),
+    ).fetchall()
+
+
+def list_expired_prioritized_queued_targets(connection: sqlite3.Connection, cutoff_iso: str) -> list[sqlite3.Row]:
+    """Alvos 'queued' com prioridade (bandeira) ou fixacao manual, em fila desde antes
+    de `cutoff_iso` -- saem aos 8h em vez de 6h."""
+    return connection.execute(
+        "SELECT nation_id, nation_name FROM targets "
+        "WHERE status = ? AND (priority != 0 OR pinned_at IS NOT NULL) AND queued_at <= ?",
+        (TargetStatus.QUEUED.value, cutoff_iso),
+    ).fetchall()
+
+
+def mark_targets_expired(connection: sqlite3.Connection, nation_ids: Iterable[str], reason: str, now_iso: str) -> int:
+    """Rejeita (rejection_category='expired') quem excedeu o tempo maximo de espera na
+    fila. So afeta quem ainda estiver 'queued' nesse momento -- protege contra a corrida
+    com o emissor a despachar um deles entretanto. Devolve quantos foram mesmo expirados."""
+    count = 0
+    for nation_id in nation_ids:
+        row = connection.execute("SELECT status FROM targets WHERE nation_id = ?", (nation_id,)).fetchone()
+        if row is not None and row["status"] == TargetStatus.QUEUED.value:
+            connection.execute(
+                "UPDATE targets SET status = ?, status_reason = ?, rejection_category = ?, "
+                "validated_at = ?, updated_at = ? WHERE nation_id = ?",
+                (TargetStatus.REJECTED.value, reason, "expired", now_iso, now_iso, nation_id),
+            )
+            count += 1
+    return count
 
 
 def mark_target_sent(connection: sqlite3.Connection, nation_id: str, now_iso: str) -> None:

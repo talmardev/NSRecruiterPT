@@ -26,7 +26,7 @@ from nsrecruiter.collector import force_refresh
 from nsrecruiter.config import Config
 from nsrecruiter.keyboard import read_keys
 from nsrecruiter.logging_setup import LogEntry
-from nsrecruiter.models import MIN_SHARED_NAME_TOKENS, AppState, TargetStatus
+from nsrecruiter.models import MIN_NAME_BASE_LENGTH, MIN_SHARED_NAME_TOKENS, AppState, TargetStatus
 from nsrecruiter.runtime_status import RuntimeStatus
 from nsrecruiter.utils import iso_to_unix_timestamp, utc_now_iso
 
@@ -85,6 +85,7 @@ class DashboardState:
     attempts_total: int
     queue_size: int
     rejected_total: int
+    expired_total: int
     sent_last_hour: int
     projection_24h: int
     failure_breakdown: list[tuple[str, int]]
@@ -210,6 +211,7 @@ def gather_state(
     attempts_total = db.count_send_attempts_total(connection)
     queue_size = db.count_targets_by_status(connection, TargetStatus.QUEUED)
     rejected_total = db.count_targets_by_status(connection, TargetStatus.REJECTED)
+    expired_total = db.count_targets_by_rejection_category(connection, "expired")
     sent_last_hour = db.count_sent_since(connection, _hours_ago_iso(1))
     pattern_rejected_total = db.count_targets_by_rejection_category(connection, "heuristic")
 
@@ -231,8 +233,7 @@ def gather_state(
 
     suggested_clusters: list[dict] = []
     if rejection_review_active and rejection_review_mode == "suggestions":
-        pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)
-        suggested_clusters = _cluster_token_share_pairs(pairs)
+        suggested_clusters = _load_suggested_clusters(connection)
 
     return DashboardState(
         region=config.region,
@@ -253,6 +254,7 @@ def gather_state(
         attempts_total=attempts_total,
         queue_size=queue_size,
         rejected_total=rejected_total,
+        expired_total=expired_total,
         sent_last_hour=sent_last_hour,
         projection_24h=projection_24h,
         failure_breakdown=[(row["reason"], row["n"]) for row in db.failure_reason_breakdown(connection)],
@@ -344,6 +346,7 @@ def _render_stats(state: DashboardState) -> Panel:
     table.add_row("Tamanho da fila:", str(state.queue_size))
     table.add_row("Rejeitados (tgcanrecruit):", str(state.rejected_total))
     table.add_row("Rejeitados (deteccao de padroes):", str(state.pattern_rejected_total))
+    table.add_row("Removidos da fila (expirados):", str(state.expired_total))
     table.add_row("Ritmo (ultima hora):", f"{state.sent_last_hour}/h")
     table.add_row("Projecao proximas 24h:", f"~{state.projection_24h}")
 
@@ -529,6 +532,38 @@ def _cluster_token_share_pairs(pairs: list[tuple[str, str, str, str, frozenset[s
             }
         )
     clusters.sort(key=lambda cluster: cluster["nation_ids"])
+    return clusters
+
+
+def _cluster_name_base_rows(rows: list[sqlite3.Row]) -> list[dict]:
+    """Agrupa as linhas de find_queued_name_base_clusters (uma por nacao) pela base de
+    nome partilhada -- ja vem uma linha por (name_base, nation_id), por isso e so
+    juntar por name_base, sem union-find (ao contrario dos clusters de palavras, aqui
+    so ha uma dimensao de sobreposicao possivel)."""
+    groups: dict[str, dict] = {}
+    for row in rows:
+        group = groups.setdefault(
+            row["name_base"], {"tokens": frozenset({row["name_base"]}), "nation_ids": [], "names": {}}
+        )
+        group["nation_ids"].append(row["nation_id"])
+        group["names"][row["nation_id"]] = row["nation_name"]
+
+    clusters = list(groups.values())
+    for cluster in clusters:
+        cluster["nation_ids"].sort()
+    return clusters
+
+
+def _load_suggested_clusters(connection: sqlite3.Connection) -> list[dict]:
+    """Todas as sugestoes da analise manual da fila: nacoes com palavras significativas
+    partilhadas (lotes gerados) + nacoes com a mesma base de nome (provaveis alts, ex:
+    'yamagoochie0026' e 'yamagoochie26') -- duas deteçoes distintas, mesma forma de
+    cluster, por isso partilham daqui em diante toda a navegacao/confirmacao no ecra.
+    Ordenado do cluster maior para o menor: o mais impactante para rever primeiro."""
+    pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)
+    name_base_rows = db.find_queued_name_base_clusters(connection, MIN_NAME_BASE_LENGTH)
+    clusters = _cluster_token_share_pairs(pairs) + _cluster_name_base_rows(name_base_rows)
+    clusters.sort(key=lambda cluster: len(cluster["nation_ids"]), reverse=True)
     return clusters
 
 
@@ -724,8 +759,7 @@ async def run_dashboard(
 
     def _enter_suggestions_mode() -> None:
         rejection_review.mode = "suggestions"
-        pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)
-        clusters = _cluster_token_share_pairs(pairs)
+        clusters = _load_suggested_clusters(connection)
         rejection_review.selected_suggestion_key = _suggestion_key(clusters[0]) if clusters else None
 
     def _enter_rejected_mode() -> None:
@@ -756,14 +790,12 @@ async def run_dashboard(
 
         if rejection_review.active and rejection_review.mode == "suggestions":
             if char in ("UP", "DOWN"):
-                pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)
-                clusters = _cluster_token_share_pairs(pairs)
+                clusters = _load_suggested_clusters(connection)
                 rejection_review.selected_suggestion_key = _move_suggestion_selection(
                     clusters, rejection_review.selected_suggestion_key, -1 if char == "UP" else 1
                 )
             elif char == "ENTER" and rejection_review.selected_suggestion_key is not None:
-                pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)
-                clusters = _cluster_token_share_pairs(pairs)
+                clusters = _load_suggested_clusters(connection)
                 match = next(
                     (c for c in clusters if _suggestion_key(c) == rejection_review.selected_suggestion_key), None
                 )
@@ -777,8 +809,7 @@ async def run_dashboard(
                         "Rejeitadas %d nacao(oes) por padrao detetado manualmente (palavras: %s).",
                         rejected, tokens_detail,
                     )
-                pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)
-                clusters = _cluster_token_share_pairs(pairs)
+                clusters = _load_suggested_clusters(connection)
                 rejection_review.selected_suggestion_key = _suggestion_key(clusters[0]) if clusters else None
             elif char.lower() == "a":
                 _enter_rejected_mode()

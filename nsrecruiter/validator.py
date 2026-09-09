@@ -11,7 +11,12 @@ from nsrecruiter.api.client import NsApiClient
 from nsrecruiter.api.exceptions import NotFoundError, NsApiError
 from nsrecruiter.api.shards import fetch_tgcanrecruit, fetch_tgcanrecruit_and_flag, flag_matches_presets
 from nsrecruiter.config import Config
-from nsrecruiter.models import MIN_SHARED_NAME_TOKENS, extract_name_base, significant_name_tokens
+from nsrecruiter.models import (
+    MIN_NAME_BASE_LENGTH,
+    MIN_SHARED_NAME_TOKENS,
+    extract_name_base,
+    significant_name_tokens,
+)
 from nsrecruiter.utils import utc_now_iso
 
 logger = logging.getLogger("nsrecruiter.validator")
@@ -36,10 +41,9 @@ def _matched_blocked_substring(nation_id: str) -> str | None:
 
 # Deteta provaveis alts: nomes que so diferem no sufixo numerico (ex: "yamagoochie0065"
 # e "yamagoochie65"), descobertos dentro da mesma janela de tempo -- decidido com o
-# utilizador. Bases muito curtas (< 3 caracteres) ficam de fora para nao gerar falsos
-# positivos em nomes genericos.
+# utilizador. Bases muito curtas ficam de fora para nao gerar falsos positivos em
+# nomes genericos (limiar em MIN_NAME_BASE_LENGTH, partilhado com a analise manual).
 _ALT_NAME_LOOKBACK_DAYS = 30.0
-_MIN_NAME_BASE_LENGTH = 3
 _ALT_REJECTION_REASON = f"provavel alt (nome-base repetido nos ultimos {int(_ALT_NAME_LOOKBACK_DAYS):d} dias)"
 
 
@@ -89,7 +93,7 @@ async def _validate_one(
         return
 
     name_base = extract_name_base(nation_id)
-    if len(name_base) >= _MIN_NAME_BASE_LENGTH:
+    if len(name_base) >= MIN_NAME_BASE_LENGTH:
         similar_count = db.count_targets_with_name_base_since(
             connection, name_base, nation_id, _alt_lookback_cutoff_iso(), row["discovered_at"]
         )

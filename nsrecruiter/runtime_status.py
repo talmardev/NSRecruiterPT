@@ -1,5 +1,5 @@
 """Estado partilhado entre o emissor e o dashboard: pausa, paragem limpa e deteção
-de bloqueio por uso externo da chave (ver arquitetura em .claude/architecture.md)."""
+de bloqueio por uso externo da chave."""
 from __future__ import annotations
 
 import asyncio
