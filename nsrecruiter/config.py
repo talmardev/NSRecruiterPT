@@ -39,6 +39,7 @@ class Config:
     lockfile_path: Path
     log_dir: Path
     log_level: str
+    priority_flag_countries: tuple[str, ...] = ()
 
     @property
     def user_agent(self) -> str:
@@ -97,6 +98,11 @@ def load_config(env_path: Path | None = None) -> Config:
             "e o limite da plataforma para telegramas de recrutamento. O valor recomendado e 182."
         )
 
+    priority_flags_raw = os.environ.get("PRIORITY_FLAG_COUNTRIES", "")
+    priority_flag_countries = tuple(
+        name.strip() for name in priority_flags_raw.split(",") if name.strip()
+    )
+
     return Config(
         region=os.environ["NS_REGION"].strip(),
         nation=os.environ["NS_NATION"].strip(),
@@ -109,4 +115,5 @@ def load_config(env_path: Path | None = None) -> Config:
         lockfile_path=Path(os.environ.get("LOCKFILE_PATH", "data/nsrecruiter.lock")),
         log_dir=Path(os.environ.get("LOG_DIR", "data/logs")),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+        priority_flag_countries=priority_flag_countries,
     )

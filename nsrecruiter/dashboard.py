@@ -28,10 +28,13 @@ from nsrecruiter.keyboard import read_keys
 from nsrecruiter.logging_setup import LogEntry
 from nsrecruiter.models import AppState, TargetStatus
 from nsrecruiter.runtime_status import RuntimeStatus
+from nsrecruiter.utils import iso_to_unix_timestamp, utc_now_iso
 
 logger = logging.getLogger("nsrecruiter.dashboard")
 
 _REFRESH_INTERVAL_SECONDS = 1.0
+_QUEUE_VIEW_REFRESH_INTERVAL_SECONDS = 0.1
+_QUEUE_VIEW_VISIBLE_ROWS = 12
 
 _STATE_LABELS = {
     AppState.SENDING: "A ENVIAR",
@@ -88,6 +91,20 @@ class DashboardState:
     rejection_breakdown: list[tuple[str, int]]
 
     log_entries: list[LogEntry]
+
+    queue_view_active: bool
+    queue_rows: list[sqlite3.Row]
+    queue_selected_nation_id: str | None
+    queue_now_unix: float
+
+
+@dataclass
+class _QueueViewState:
+    """Estado do modo de selecao da fila (tecla 'l'), preservado entre atualizacoes
+    do dashboard -- ao contrario de DashboardState, que e reconstruido a cada 'tick'."""
+
+    active: bool = False
+    selected_nation_id: str | None = None
 
 
 def _format_mmss(seconds: float) -> str:
@@ -160,6 +177,8 @@ def gather_state(
     log_entries: list[LogEntry],
     start_time: float,
     dry_run: bool,
+    queue_view_active: bool = False,
+    queue_selected_nation_id: str | None = None,
 ) -> DashboardState:
     sent_today = db.count_sent_since(connection, _today_start_iso())
     sent_total = db.count_sent_total(connection)
@@ -208,6 +227,10 @@ def gather_state(
         failure_breakdown=[(row["reason"], row["n"]) for row in db.failure_reason_breakdown(connection)],
         rejection_breakdown=[(row["reason"], row["n"]) for row in db.rejection_reason_breakdown(connection)],
         log_entries=list(log_entries),
+        queue_view_active=queue_view_active,
+        queue_rows=db.list_queued_targets(connection) if queue_view_active else [],
+        queue_selected_nation_id=queue_selected_nation_id,
+        queue_now_unix=time.time(),
     )
 
 
@@ -290,6 +313,70 @@ def _render_stats(state: DashboardState) -> Panel:
     return Panel(table, title="Estatisticas", border_style="grey50")
 
 
+def _move_selection(rows: list[sqlite3.Row], selected_nation_id: str | None, delta: int) -> str | None:
+    """Nova nacao selecionada ao mover +1 (baixo) ou -1 (cima) na lista da fila,
+    presa aos limites (nunca da a volta)."""
+    if not rows:
+        return None
+    current_index = next(
+        (index for index, row in enumerate(rows) if row["nation_id"] == selected_nation_id), 0
+    )
+    new_index = max(0, min(current_index + delta, len(rows) - 1))
+    return rows[new_index]["nation_id"]
+
+
+def _visible_queue_window(
+    rows: list[sqlite3.Row], selected_nation_id: str | None, window_size: int
+) -> tuple[list[sqlite3.Row], int]:
+    """Fatia visivel da fila (janela deslizante centrada na selecao) e o indice do
+    selecionado dentro dessa fatia -- para nao tentar desenhar filas com centenas
+    de linhas de uma vez."""
+    if not rows:
+        return [], -1
+    selected_index = next(
+        (index for index, row in enumerate(rows) if row["nation_id"] == selected_nation_id), 0
+    )
+    if len(rows) <= window_size:
+        return list(rows), selected_index
+    half = window_size // 2
+    start = max(0, min(selected_index - half, len(rows) - window_size))
+    return list(rows[start : start + window_size]), selected_index - start
+
+
+def _render_queue_view(state: DashboardState) -> Panel:
+    title = f"Fila -- selecionar prioridade ({len(state.queue_rows)} na fila)"
+    if not state.queue_rows:
+        return Panel(Text("(fila vazia)", style="dim"), title=title, border_style="grey50")
+
+    visible_rows, selected_index = _visible_queue_window(
+        state.queue_rows, state.queue_selected_nation_id, _QUEUE_VIEW_VISIBLE_ROWS
+    )
+
+    table = Table.grid(padding=(0, 1), expand=True)
+    table.add_column(width=1)
+    table.add_column(ratio=1)
+    table.add_column(justify="right")
+    table.add_column(justify="left")
+
+    for offset, row in enumerate(visible_rows):
+        is_selected = offset == selected_index
+        elapsed = _format_duration(max(0.0, state.queue_now_unix - iso_to_unix_timestamp(row["queued_at"])))
+        tags = []
+        if row["pinned_at"]:
+            tags.append("FIXADO")
+        if row["priority"]:
+            tags.append("bandeira")
+        table.add_row(
+            ">" if is_selected else "",
+            row["nation_name"],
+            elapsed,
+            " ".join(tags),
+            style="bold cyan" if is_selected else None,
+        )
+
+    return Panel(table, title=title, border_style="grey50")
+
+
 def _render_log(state: DashboardState) -> Panel:
     lines: list[Text] = []
     for entry in state.log_entries:
@@ -304,14 +391,26 @@ def _render_log(state: DashboardState) -> Panel:
     return Panel(Group(*lines), title="Log", border_style="grey50")
 
 
-def _render_footer() -> Panel:
+def _render_footer(queue_view_active: bool) -> Panel:
     text = Text()
-    text.append(" p ", style="bold black on grey70")
-    text.append(" pausar/retomar     ")
-    text.append(" r ", style="bold black on grey70")
-    text.append(" atualizar fila agora     ")
-    text.append(" q ", style="bold black on grey70")
-    text.append(" sair (termina o envio em curso)")
+    if queue_view_active:
+        text.append(" cima/baixo ", style="bold black on grey70")
+        text.append(" mover     ")
+        text.append(" Enter ", style="bold black on grey70")
+        text.append(" fixar/desfixar no topo     ")
+        text.append(" Esc/l ", style="bold black on grey70")
+        text.append(" sair da fila     ")
+        text.append(" q ", style="bold black on grey70")
+        text.append(" sair do programa")
+    else:
+        text.append(" p ", style="bold black on grey70")
+        text.append(" pausar/retomar     ")
+        text.append(" r ", style="bold black on grey70")
+        text.append(" atualizar fila agora     ")
+        text.append(" l ", style="bold black on grey70")
+        text.append(" ver/priorizar fila     ")
+        text.append(" q ", style="bold black on grey70")
+        text.append(" sair (termina o envio em curso)")
     return Panel(text, border_style="grey50")
 
 
@@ -329,10 +428,15 @@ def build_layout() -> Layout:
 
 def render(layout: Layout, state: DashboardState) -> None:
     layout["header"].update(_render_header(state))
-    layout["limits"].update(_render_limits(state))
-    layout["stats"].update(_render_stats(state))
+    if state.queue_view_active:
+        layout["body"].split_column(Layout(name="queue"))
+        layout["body"]["queue"].update(_render_queue_view(state))
+    else:
+        layout["body"].split_row(Layout(name="limits"), Layout(name="stats"))
+        layout["body"]["limits"].update(_render_limits(state))
+        layout["body"]["stats"].update(_render_stats(state))
     layout["log"].update(_render_log(state))
-    layout["footer"].update(_render_footer())
+    layout["footer"].update(_render_footer(state.queue_view_active))
 
 
 async def run_dashboard(
@@ -347,8 +451,34 @@ async def run_dashboard(
     dry_run: bool = False,
 ) -> None:
     layout = build_layout()
+    queue_view = _QueueViewState()
+
+    def _enter_queue_view() -> None:
+        rows = db.list_queued_targets(connection)
+        queue_view.active = True
+        queue_view.selected_nation_id = rows[0]["nation_id"] if rows else None
 
     def on_key(char: str) -> None:
+        if queue_view.active:
+            if char in ("UP", "DOWN"):
+                rows = db.list_queued_targets(connection)
+                queue_view.selected_nation_id = _move_selection(
+                    rows, queue_view.selected_nation_id, -1 if char == "UP" else 1
+                )
+            elif char == "ENTER" and queue_view.selected_nation_id is not None:
+                pinned = db.toggle_target_pin(connection, queue_view.selected_nation_id, utc_now_iso())
+                logger.info(
+                    "%s no topo da fila: %s",
+                    "Fixado" if pinned else "Retirada a fixacao de",
+                    queue_view.selected_nation_id,
+                )
+            elif char == "ESC" or char.lower() == "l":
+                queue_view.active = False
+            elif char.lower() == "q":
+                logger.info("Saida pedida (tecla q); a terminar o envio em curso, se houver algum.")
+                runtime_status.request_shutdown()
+            return
+
         lowered = char.lower()
         if lowered == "q":
             logger.info("Saida pedida (tecla q); a terminar o envio em curso, se houver algum.")
@@ -358,17 +488,24 @@ async def run_dashboard(
             logger.info("Pausado (tecla p)." if runtime_status.paused else "Retomado (tecla p).")
         elif lowered == "r":
             asyncio.create_task(force_refresh(connection, api_client))
+        elif lowered == "l":
+            _enter_queue_view()
 
     keyboard_task = asyncio.create_task(read_keys(on_key))
     try:
         with Live(layout, screen=True, auto_refresh=False) as live:
             while not runtime_status.shutdown_requested.is_set():
                 state = gather_state(
-                    connection, config, general_limiter, tg_limiter, runtime_status, log_buffer, start_time, dry_run
+                    connection, config, general_limiter, tg_limiter, runtime_status, log_buffer, start_time,
+                    dry_run, queue_view_active=queue_view.active,
+                    queue_selected_nation_id=queue_view.selected_nation_id,
                 )
                 render(layout, state)
                 live.refresh()
-                await runtime_status.sleep_or_shutdown(_REFRESH_INTERVAL_SECONDS)
+                refresh_interval = (
+                    _QUEUE_VIEW_REFRESH_INTERVAL_SECONDS if queue_view.active else _REFRESH_INTERVAL_SECONDS
+                )
+                await runtime_status.sleep_or_shutdown(refresh_interval)
     finally:
         keyboard_task.cancel()
         await asyncio.gather(keyboard_task, return_exceptions=True)

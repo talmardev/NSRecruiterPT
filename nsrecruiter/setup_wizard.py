@@ -62,6 +62,14 @@ _FIELDS = [
         "NUNCA a partilhes com ninguem -- quem a tiver pode enviar o teu telegrama a quem quiser.",
         secret=True,
     ),
+    _Field(
+        "PRIORITY_FLAG_COUNTRIES", "Bandeiras prioritarias (opcional)",
+        "Nomes de bandeiras 'preset' de paises, separados por virgula (ex: Portugal,Brazil), "
+        "que saltam para o topo da fila de envio quando uma nacao as tiver selecionada. So "
+        "funciona para bandeiras preset -- nunca para bandeiras carregadas (upload). "
+        "Deixa em branco para desativar.",
+        optional=True,
+    ),
 ]
 
 

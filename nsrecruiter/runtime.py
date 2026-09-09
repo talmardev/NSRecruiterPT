@@ -45,6 +45,11 @@ async def run_app(config: Config, log_buffer: "deque[LogEntry]", dry_run: bool =
     if dry_run:
         logger.info("MODO DRY-RUN: nenhuma chamada a a=sendTG sera feita.")
 
+    if config.priority_flag_countries:
+        logger.info(
+            "Prioridade por bandeira ativa para: %s.", ", ".join(config.priority_flag_countries)
+        )
+
     try:
         region_members = frozenset(await fetch_region_nations(api_client, config.region))
         logger.info("Membros atuais da regiao carregados: %d.", len(region_members))
