@@ -33,8 +33,8 @@ from nsrecruiter.utils import iso_to_unix_timestamp, utc_now_iso
 logger = logging.getLogger("nsrecruiter.dashboard")
 
 _REFRESH_INTERVAL_SECONDS = 1.0
-_QUEUE_VIEW_REFRESH_INTERVAL_SECONDS = 0.1
-_QUEUE_VIEW_VISIBLE_ROWS = 12
+_BROWSE_REFRESH_INTERVAL_SECONDS = 0.1
+_BROWSE_VISIBLE_ROWS = 12
 
 _STATE_LABELS = {
     AppState.SENDING: "A ENVIAR",
@@ -95,7 +95,13 @@ class DashboardState:
     queue_view_active: bool
     queue_rows: list[sqlite3.Row]
     queue_selected_nation_id: str | None
-    queue_now_unix: float
+
+    pattern_rejected_total: int
+    rejection_review_active: bool
+    rejection_clusters: list[sqlite3.Row]
+    rejection_selected_key: tuple[str, str | None] | None
+
+    now_unix: float
 
 
 @dataclass
@@ -105,6 +111,14 @@ class _QueueViewState:
 
     active: bool = False
     selected_nation_id: str | None = None
+
+
+@dataclass
+class _RejectionReviewState:
+    """Estado do modo de revisao de rejeicoes por deteçao de padroes (tecla 'v')."""
+
+    active: bool = False
+    selected_key: tuple[str, str | None] | None = None
 
 
 def _format_mmss(seconds: float) -> str:
@@ -179,6 +193,8 @@ def gather_state(
     dry_run: bool,
     queue_view_active: bool = False,
     queue_selected_nation_id: str | None = None,
+    rejection_review_active: bool = False,
+    rejection_selected_key: tuple[str, str | None] | None = None,
 ) -> DashboardState:
     sent_today = db.count_sent_since(connection, _today_start_iso())
     sent_total = db.count_sent_total(connection)
@@ -186,6 +202,7 @@ def gather_state(
     queue_size = db.count_targets_by_status(connection, TargetStatus.QUEUED)
     rejected_total = db.count_targets_by_status(connection, TargetStatus.REJECTED)
     sent_last_hour = db.count_sent_since(connection, _hours_ago_iso(1))
+    pattern_rejected_total = db.count_targets_by_rejection_category(connection, "heuristic")
 
     success_rate = (sent_total / attempts_total) if attempts_total else None
     theoretical_max_24h = int(86400 / config.send_interval_seconds)
@@ -230,7 +247,11 @@ def gather_state(
         queue_view_active=queue_view_active,
         queue_rows=db.list_queued_targets(connection) if queue_view_active else [],
         queue_selected_nation_id=queue_selected_nation_id,
-        queue_now_unix=time.time(),
+        pattern_rejected_total=pattern_rejected_total,
+        rejection_review_active=rejection_review_active,
+        rejection_clusters=db.list_rejection_clusters(connection, "heuristic") if rejection_review_active else [],
+        rejection_selected_key=rejection_selected_key,
+        now_unix=time.time(),
     )
 
 
@@ -301,6 +322,7 @@ def _render_stats(state: DashboardState) -> Panel:
     table.add_row("Taxa de sucesso:", success_rate_text)
     table.add_row("Tamanho da fila:", str(state.queue_size))
     table.add_row("Rejeitados (tgcanrecruit):", str(state.rejected_total))
+    table.add_row("Rejeitados (deteccao de padroes):", str(state.pattern_rejected_total))
     table.add_row("Ritmo (ultima hora):", f"{state.sent_last_hour}/h")
     table.add_row("Projecao proximas 24h:", f"~{state.projection_24h}")
 
@@ -349,7 +371,7 @@ def _render_queue_view(state: DashboardState) -> Panel:
         return Panel(Text("(fila vazia)", style="dim"), title=title, border_style="grey50")
 
     visible_rows, selected_index = _visible_queue_window(
-        state.queue_rows, state.queue_selected_nation_id, _QUEUE_VIEW_VISIBLE_ROWS
+        state.queue_rows, state.queue_selected_nation_id, _BROWSE_VISIBLE_ROWS
     )
 
     table = Table.grid(padding=(0, 1), expand=True)
@@ -360,7 +382,7 @@ def _render_queue_view(state: DashboardState) -> Panel:
 
     for offset, row in enumerate(visible_rows):
         is_selected = offset == selected_index
-        elapsed = _format_duration(max(0.0, state.queue_now_unix - iso_to_unix_timestamp(row["queued_at"])))
+        elapsed = _format_duration(max(0.0, state.now_unix - iso_to_unix_timestamp(row["queued_at"])))
         tags = []
         if row["pinned_at"]:
             tags.append("FIXADO")
@@ -371,6 +393,69 @@ def _render_queue_view(state: DashboardState) -> Panel:
             row["nation_name"],
             elapsed,
             " ".join(tags),
+            style="bold cyan" if is_selected else None,
+        )
+
+    return Panel(table, title=title, border_style="grey50")
+
+
+def _cluster_key(row: sqlite3.Row) -> tuple[str, str | None]:
+    return (row["status_reason"], row["rejection_detail"])
+
+
+def _move_cluster_selection(
+    clusters: list[sqlite3.Row], selected_key: tuple[str, str | None] | None, delta: int
+) -> tuple[str, str | None] | None:
+    """Equivalente a _move_selection, mas para os clusters de rejeicao (chave
+    composta razao+detalhe em vez de nation_id)."""
+    if not clusters:
+        return None
+    current_index = next((index for index, row in enumerate(clusters) if _cluster_key(row) == selected_key), 0)
+    new_index = max(0, min(current_index + delta, len(clusters) - 1))
+    return _cluster_key(clusters[new_index])
+
+
+def _visible_cluster_window(
+    clusters: list[sqlite3.Row], selected_key: tuple[str, str | None] | None, window_size: int
+) -> tuple[list[sqlite3.Row], int]:
+    """Equivalente a _visible_queue_window, mas para os clusters de rejeicao."""
+    if not clusters:
+        return [], -1
+    selected_index = next((index for index, row in enumerate(clusters) if _cluster_key(row) == selected_key), 0)
+    if len(clusters) <= window_size:
+        return list(clusters), selected_index
+    half = window_size // 2
+    start = max(0, min(selected_index - half, len(clusters) - window_size))
+    return list(clusters[start : start + window_size]), selected_index - start
+
+
+def _render_rejection_review(state: DashboardState) -> Panel:
+    title = f"Revisao de rejeicoes por deteccao de padroes ({state.pattern_rejected_total} no total)"
+    if not state.rejection_clusters:
+        return Panel(
+            Text("(nenhuma rejeicao por deteccao de padroes)", style="dim"), title=title, border_style="grey50"
+        )
+
+    visible_rows, selected_index = _visible_cluster_window(
+        state.rejection_clusters, state.rejection_selected_key, _BROWSE_VISIBLE_ROWS
+    )
+
+    table = Table.grid(padding=(0, 1), expand=True)
+    table.add_column(width=1)
+    table.add_column(ratio=2)
+    table.add_column(ratio=1)
+    table.add_column(justify="right")
+    table.add_column(justify="right")
+
+    for offset, row in enumerate(visible_rows):
+        is_selected = offset == selected_index
+        elapsed = _format_duration(max(0.0, state.now_unix - iso_to_unix_timestamp(row["latest_at"])))
+        table.add_row(
+            ">" if is_selected else "",
+            row["status_reason"],
+            row["rejection_detail"] or "--",
+            str(row["n"]),
+            elapsed,
             style="bold cyan" if is_selected else None,
         )
 
@@ -391,15 +476,24 @@ def _render_log(state: DashboardState) -> Panel:
     return Panel(Group(*lines), title="Log", border_style="grey50")
 
 
-def _render_footer(queue_view_active: bool) -> Panel:
+def _render_footer(mode: str) -> Panel:
     text = Text()
-    if queue_view_active:
+    if mode == "queue":
         text.append(" cima/baixo ", style="bold black on grey70")
         text.append(" mover     ")
         text.append(" Enter ", style="bold black on grey70")
         text.append(" fixar/desfixar no topo     ")
         text.append(" Esc/l ", style="bold black on grey70")
         text.append(" sair da fila     ")
+        text.append(" q ", style="bold black on grey70")
+        text.append(" sair do programa")
+    elif mode == "rejection":
+        text.append(" cima/baixo ", style="bold black on grey70")
+        text.append(" mover     ")
+        text.append(" Enter ", style="bold black on grey70")
+        text.append(" repor grupo na fila     ")
+        text.append(" Esc/v ", style="bold black on grey70")
+        text.append(" sair da revisao     ")
         text.append(" q ", style="bold black on grey70")
         text.append(" sair do programa")
     else:
@@ -409,6 +503,8 @@ def _render_footer(queue_view_active: bool) -> Panel:
         text.append(" atualizar fila agora     ")
         text.append(" l ", style="bold black on grey70")
         text.append(" ver/priorizar fila     ")
+        text.append(" v ", style="bold black on grey70")
+        text.append(" rever rejeicoes     ")
         text.append(" q ", style="bold black on grey70")
         text.append(" sair (termina o envio em curso)")
     return Panel(text, border_style="grey50")
@@ -431,12 +527,18 @@ def render(layout: Layout, state: DashboardState) -> None:
     if state.queue_view_active:
         layout["body"].split_column(Layout(name="queue"))
         layout["body"]["queue"].update(_render_queue_view(state))
+        footer_mode = "queue"
+    elif state.rejection_review_active:
+        layout["body"].split_column(Layout(name="rejection_review"))
+        layout["body"]["rejection_review"].update(_render_rejection_review(state))
+        footer_mode = "rejection"
     else:
         layout["body"].split_row(Layout(name="limits"), Layout(name="stats"))
         layout["body"]["limits"].update(_render_limits(state))
         layout["body"]["stats"].update(_render_stats(state))
+        footer_mode = "normal"
     layout["log"].update(_render_log(state))
-    layout["footer"].update(_render_footer(state.queue_view_active))
+    layout["footer"].update(_render_footer(footer_mode))
 
 
 async def run_dashboard(
@@ -452,11 +554,19 @@ async def run_dashboard(
 ) -> None:
     layout = build_layout()
     queue_view = _QueueViewState()
+    rejection_review = _RejectionReviewState()
 
     def _enter_queue_view() -> None:
+        rejection_review.active = False
         rows = db.list_queued_targets(connection)
         queue_view.active = True
         queue_view.selected_nation_id = rows[0]["nation_id"] if rows else None
+
+    def _enter_rejection_review() -> None:
+        queue_view.active = False
+        clusters = db.list_rejection_clusters(connection, "heuristic")
+        rejection_review.active = True
+        rejection_review.selected_key = _cluster_key(clusters[0]) if clusters else None
 
     def on_key(char: str) -> None:
         if queue_view.active:
@@ -479,6 +589,30 @@ async def run_dashboard(
                 runtime_status.request_shutdown()
             return
 
+        if rejection_review.active:
+            if char in ("UP", "DOWN"):
+                clusters = db.list_rejection_clusters(connection, "heuristic")
+                rejection_review.selected_key = _move_cluster_selection(
+                    clusters, rejection_review.selected_key, -1 if char == "UP" else 1
+                )
+            elif char == "ENTER" and rejection_review.selected_key is not None:
+                status_reason, detail = rejection_review.selected_key
+                reverted = db.revert_targets_by_rejection_group(connection, status_reason, detail, utc_now_iso())
+                logger.info(
+                    "Repostas %d nacao(oes) do grupo '%s' (%s) para revalidar.",
+                    reverted,
+                    status_reason,
+                    detail or "-",
+                )
+                clusters = db.list_rejection_clusters(connection, "heuristic")
+                rejection_review.selected_key = _cluster_key(clusters[0]) if clusters else None
+            elif char == "ESC" or char.lower() == "v":
+                rejection_review.active = False
+            elif char.lower() == "q":
+                logger.info("Saida pedida (tecla q); a terminar o envio em curso, se houver algum.")
+                runtime_status.request_shutdown()
+            return
+
         lowered = char.lower()
         if lowered == "q":
             logger.info("Saida pedida (tecla q); a terminar o envio em curso, se houver algum.")
@@ -490,6 +624,8 @@ async def run_dashboard(
             asyncio.create_task(force_refresh(connection, api_client))
         elif lowered == "l":
             _enter_queue_view()
+        elif lowered == "v":
+            _enter_rejection_review()
 
     keyboard_task = asyncio.create_task(read_keys(on_key))
     try:
@@ -499,12 +635,13 @@ async def run_dashboard(
                     connection, config, general_limiter, tg_limiter, runtime_status, log_buffer, start_time,
                     dry_run, queue_view_active=queue_view.active,
                     queue_selected_nation_id=queue_view.selected_nation_id,
+                    rejection_review_active=rejection_review.active,
+                    rejection_selected_key=rejection_review.selected_key,
                 )
                 render(layout, state)
                 live.refresh()
-                refresh_interval = (
-                    _QUEUE_VIEW_REFRESH_INTERVAL_SECONDS if queue_view.active else _REFRESH_INTERVAL_SECONDS
-                )
+                browsing = queue_view.active or rejection_review.active
+                refresh_interval = _BROWSE_REFRESH_INTERVAL_SECONDS if browsing else _REFRESH_INTERVAL_SECONDS
                 await runtime_status.sleep_or_shutdown(refresh_interval)
     finally:
         keyboard_task.cancel()

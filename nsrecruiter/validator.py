@@ -11,7 +11,7 @@ from nsrecruiter.api.client import NsApiClient
 from nsrecruiter.api.exceptions import NsApiError
 from nsrecruiter.api.shards import fetch_tgcanrecruit, fetch_tgcanrecruit_and_flag, flag_matches_presets
 from nsrecruiter.config import Config
-from nsrecruiter.models import extract_name_base
+from nsrecruiter.models import extract_name_base, significant_name_tokens
 from nsrecruiter.utils import utc_now_iso
 
 logger = logging.getLogger("nsrecruiter.validator")
@@ -27,8 +27,11 @@ _IDLE_POLL_INTERVAL_SECONDS = 2.0
 _BLOCKED_NAME_SUBSTRINGS = ("facist", "facista", "fascista", "nazi")
 
 
-def _has_blocked_name(nation_id: str) -> bool:
-    return any(substring in nation_id for substring in _BLOCKED_NAME_SUBSTRINGS)
+_BLOCKED_NAME_REASON = "nome bloqueado (padrao fascista/nazi)"
+
+
+def _matched_blocked_substring(nation_id: str) -> str | None:
+    return next((substring for substring in _BLOCKED_NAME_SUBSTRINGS if substring in nation_id), None)
 
 
 # Deteta provaveis alts: nomes que so diferem no sufixo numerico (ex: "yamagoochie0065"
@@ -44,6 +47,25 @@ def _alt_lookback_cutoff_iso() -> str:
     return (datetime.now(timezone.utc) - timedelta(days=_ALT_NAME_LOOKBACK_DAYS)).isoformat(timespec="seconds")
 
 
+# Deteta lotes gerados a partir de listas externas (ex: "2018_azerbaijan_grand_prix",
+# "2018_german_grand_prix" -- nomes de corridas de Formula 1): nao partilham uma base
+# comum como os alts acima, mas repetem 2+ palavras distintivas em pouco tempo.
+# Janela curta (1h, nao dias) e exigir 2+ palavras (nao 1) foi decidido com o
+# utilizador para minimizar o risco de rejeitar coincidencias entre jogadores reais.
+_BATCH_TOKEN_LOOKBACK_MINUTES = 60.0
+_MIN_SHARED_TOKENS = 2
+_BATCH_TOKEN_REJECTION_REASON = (
+    f"provavel lote gerado (2+ palavras do nome repetidas nos ultimos "
+    f"{int(_BATCH_TOKEN_LOOKBACK_MINUTES):d} min)"
+)
+
+
+def _batch_token_lookback_cutoff_iso() -> str:
+    return (datetime.now(timezone.utc) - timedelta(minutes=_BATCH_TOKEN_LOOKBACK_MINUTES)).isoformat(
+        timespec="seconds"
+    )
+
+
 async def _validate_one(
     connection: sqlite3.Connection,
     client: NsApiClient,
@@ -54,9 +76,12 @@ async def _validate_one(
     nation_id = row["nation_id"]
     now_iso = utc_now_iso()
 
-    if _has_blocked_name(nation_id):
-        db.mark_target_rejected(connection, nation_id, "nome bloqueado (padrao fascista/nazi)", now_iso)
-        logger.info("Rejeitado %s: nome bloqueado.", row["nation_name"])
+    matched_substring = _matched_blocked_substring(nation_id)
+    if matched_substring is not None:
+        db.mark_target_rejected(
+            connection, nation_id, _BLOCKED_NAME_REASON, now_iso, heuristic=True, detail=matched_substring
+        )
+        logger.info("Rejeitado %s: nome bloqueado (%s).", row["nation_name"], matched_substring)
         return
 
     if nation_id in region_members:
@@ -67,11 +92,36 @@ async def _validate_one(
     name_base = extract_name_base(nation_id)
     if len(name_base) >= _MIN_NAME_BASE_LENGTH:
         similar_count = db.count_targets_with_name_base_since(
-            connection, name_base, nation_id, _alt_lookback_cutoff_iso()
+            connection, name_base, nation_id, _alt_lookback_cutoff_iso(), row["discovered_at"]
         )
         if similar_count > 0:
-            db.mark_target_rejected(connection, nation_id, _ALT_REJECTION_REASON, now_iso)
+            db.mark_target_rejected(
+                connection, nation_id, _ALT_REJECTION_REASON, now_iso, heuristic=True, detail=name_base
+            )
             logger.info("Rejeitado %s: provavel alt (base '%s').", row["nation_name"], name_base)
+            return
+
+    tokens = significant_name_tokens(nation_id)
+    if tokens:
+        shared_count = db.count_targets_sharing_tokens_since(
+            connection,
+            tokens,
+            nation_id,
+            _batch_token_lookback_cutoff_iso(),
+            row["discovered_at"],
+            _MIN_SHARED_TOKENS,
+        )
+        if shared_count > 0:
+            tokens_detail = ",".join(sorted(tokens))
+            db.mark_target_rejected(
+                connection, nation_id, _BATCH_TOKEN_REJECTION_REASON, now_iso,
+                heuristic=True, detail=tokens_detail,
+            )
+            logger.info(
+                "Rejeitado %s: provavel lote gerado (palavras partilhadas: %s).",
+                row["nation_name"],
+                tokens_detail,
+            )
             return
 
     try:

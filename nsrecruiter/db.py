@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from pathlib import Path
 
-from nsrecruiter.models import TargetSource, TargetStatus, extract_name_base
+from nsrecruiter.models import TargetSource, TargetStatus, extract_name_base, significant_name_tokens
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS targets (
@@ -21,11 +22,20 @@ CREATE TABLE IF NOT EXISTS targets (
     priority INTEGER NOT NULL DEFAULT 0,
     pinned_at TEXT,
     name_base TEXT NOT NULL DEFAULT '',
+    rejection_category TEXT,
+    rejection_detail TEXT,
     updated_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_targets_status ON targets(status);
-CREATE INDEX IF NOT EXISTS idx_targets_name_base ON targets(name_base);
+
+CREATE TABLE IF NOT EXISTS target_name_tokens (
+    nation_id TEXT NOT NULL REFERENCES targets(nation_id),
+    token TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_target_name_tokens_token ON target_name_tokens(token);
+CREATE INDEX IF NOT EXISTS idx_target_name_tokens_nation ON target_name_tokens(nation_id);
 
 CREATE TABLE IF NOT EXISTS send_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,8 +72,14 @@ def init_schema(connection: sqlite3.Connection) -> None:
     _ensure_column(connection, "targets", "priority", "priority INTEGER NOT NULL DEFAULT 0")
     _ensure_column(connection, "targets", "pinned_at", "pinned_at TEXT")
     _ensure_column(connection, "targets", "name_base", "name_base TEXT NOT NULL DEFAULT ''")
+    _ensure_column(connection, "targets", "rejection_category", "rejection_category TEXT")
+    _ensure_column(connection, "targets", "rejection_detail", "rejection_detail TEXT")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_targets_name_base ON targets(name_base)")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_targets_rejection_category ON targets(rejection_category)"
+    )
     _backfill_name_base(connection)
+    _backfill_name_tokens(connection)
 
 
 def _backfill_name_base(connection: sqlite3.Connection) -> None:
@@ -73,6 +89,20 @@ def _backfill_name_base(connection: sqlite3.Connection) -> None:
         "UPDATE targets SET name_base = ? WHERE nation_id = ?",
         [(extract_name_base(row["nation_id"]), row["nation_id"]) for row in rows],
     )
+
+
+def _backfill_name_tokens(connection: sqlite3.Connection) -> None:
+    """Preenche target_name_tokens para alvos gravados antes desta tabela existir."""
+    rows = connection.execute(
+        "SELECT nation_id FROM targets WHERE nation_id NOT IN (SELECT DISTINCT nation_id FROM target_name_tokens)"
+    ).fetchall()
+    pairs = [
+        (row["nation_id"], token)
+        for row in rows
+        for token in significant_name_tokens(row["nation_id"])
+    ]
+    if pairs:
+        connection.executemany("INSERT INTO target_name_tokens (nation_id, token) VALUES (?, ?)", pairs)
 
 
 def _ensure_column(connection: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -95,7 +125,7 @@ def insert_discovered_target(
     source: TargetSource,
     now_iso: str,
 ) -> None:
-    connection.execute(
+    cursor = connection.execute(
         "INSERT OR IGNORE INTO targets "
         "(nation_id, nation_name, status, source, discovered_at, attempts, name_base, updated_at) "
         "VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
@@ -109,18 +139,60 @@ def insert_discovered_target(
             now_iso,
         ),
     )
+    if cursor.rowcount:
+        tokens = significant_name_tokens(nation_id)
+        if tokens:
+            connection.executemany(
+                "INSERT INTO target_name_tokens (nation_id, token) VALUES (?, ?)",
+                [(nation_id, token) for token in tokens],
+            )
 
 
 def count_targets_with_name_base_since(
-    connection: sqlite3.Connection, name_base: str, exclude_nation_id: str, since_iso: str
+    connection: sqlite3.Connection, name_base: str, exclude_nation_id: str, since_iso: str, before_iso: str
 ) -> int:
-    """Quantos outros alvos partilham a mesma base de nome (sem sufixo numerico),
-    descobertos desde `since_iso` -- usado para detetar provaveis alts."""
+    """Quantos outros alvos com a mesma base de nome (sem sufixo numerico) foram
+    descobertos entre `since_iso` (inclusive) e `before_iso` (exclusive) -- usado para
+    detetar provaveis alts. O limite superior conta so quem apareceu ANTES deste alvo,
+    para que o primeiro de uma rajada nunca seja rejeitado por causa dos que vem a seguir."""
     row = connection.execute(
-        "SELECT COUNT(*) AS n FROM targets WHERE name_base = ? AND nation_id != ? AND discovered_at >= ?",
-        (name_base, exclude_nation_id, since_iso),
+        "SELECT COUNT(*) AS n FROM targets "
+        "WHERE name_base = ? AND nation_id != ? AND discovered_at >= ? AND discovered_at < ?",
+        (name_base, exclude_nation_id, since_iso, before_iso),
     ).fetchone()
     return row["n"]
+
+
+def count_targets_sharing_tokens_since(
+    connection: sqlite3.Connection,
+    tokens: Iterable[str],
+    exclude_nation_id: str,
+    since_iso: str,
+    before_iso: str,
+    min_shared_tokens: int,
+) -> int:
+    """Quantas outras nacoes descobertas entre `since_iso` (inclusive) e `before_iso`
+    (exclusive) partilham pelo menos `min_shared_tokens` das palavras dadas -- usado
+    para detetar lotes gerados a partir de listas externas (ex: '..._grand_prix')."""
+    token_list = list(tokens)
+    if not token_list:
+        return 0
+    placeholders = ",".join("?" for _ in token_list)
+    rows = connection.execute(
+        f"""
+        SELECT t.nation_id
+        FROM target_name_tokens tnt
+        JOIN targets t ON t.nation_id = tnt.nation_id
+        WHERE tnt.token IN ({placeholders})
+          AND t.nation_id != ?
+          AND t.discovered_at >= ?
+          AND t.discovered_at < ?
+        GROUP BY t.nation_id
+        HAVING COUNT(DISTINCT tnt.token) >= ?
+        """,
+        (*token_list, exclude_nation_id, since_iso, before_iso, min_shared_tokens),
+    ).fetchall()
+    return len(rows)
 
 
 def next_discovered_target(connection: sqlite3.Connection) -> sqlite3.Row | None:
@@ -140,11 +212,69 @@ def mark_target_queued(
     )
 
 
-def mark_target_rejected(connection: sqlite3.Connection, nation_id: str, reason: str, now_iso: str) -> None:
+def mark_target_rejected(
+    connection: sqlite3.Connection,
+    nation_id: str,
+    reason: str,
+    now_iso: str,
+    heuristic: bool = False,
+    detail: str | None = None,
+) -> None:
+    """`heuristic=True` marca uma rejeicao por deteçao de padrao (nome bloqueado, alt,
+    lote gerado) em vez de um facto direto da API -- essas sao as unicas revisiveis e
+    reversiveis no ecra de revisao do dashboard (tecla 'v'). `detail` e a chave do
+    "cluster" dentro dessa razao (ex: a base partilhada, ou as palavras repetidas)."""
     connection.execute(
-        "UPDATE targets SET status = ?, status_reason = ?, validated_at = ?, updated_at = ? WHERE nation_id = ?",
-        (TargetStatus.REJECTED.value, reason, now_iso, now_iso, nation_id),
+        "UPDATE targets SET status = ?, status_reason = ?, rejection_category = ?, rejection_detail = ?, "
+        "validated_at = ?, updated_at = ? WHERE nation_id = ?",
+        (
+            TargetStatus.REJECTED.value,
+            reason,
+            "heuristic" if heuristic else None,
+            detail,
+            now_iso,
+            now_iso,
+            nation_id,
+        ),
     )
+
+
+def count_targets_by_rejection_category(connection: sqlite3.Connection, category: str) -> int:
+    row = connection.execute(
+        "SELECT COUNT(*) AS n FROM targets WHERE status = ? AND rejection_category = ?",
+        (TargetStatus.REJECTED.value, category),
+    ).fetchone()
+    return row["n"]
+
+
+def list_rejection_clusters(connection: sqlite3.Connection, category: str) -> list[sqlite3.Row]:
+    """Agrupa as rejeicoes de uma categoria por (razao, detalhe) -- ex: "provavel lote
+    gerado" + "grand,prix" e um cluster, separado de "provavel lote gerado" + "card,coletor"."""
+    return connection.execute(
+        "SELECT status_reason, rejection_detail, COUNT(*) AS n, MAX(validated_at) AS latest_at "
+        "FROM targets WHERE status = ? AND rejection_category = ? "
+        "GROUP BY status_reason, rejection_detail ORDER BY latest_at DESC",
+        (TargetStatus.REJECTED.value, category),
+    ).fetchall()
+
+
+def revert_targets_by_rejection_group(
+    connection: sqlite3.Connection, status_reason: str, detail: str | None, now_iso: str
+) -> int:
+    """Devolve ao estado 'discovered' todos os alvos de um cluster de rejeicao (tecla
+    Enter no ecra de revisao) -- para serem revalidados do zero. Devolve quantos alvos
+    foram repostos."""
+    detail_clause = "rejection_detail IS NULL" if detail is None else "rejection_detail = ?"
+    where_params = (TargetStatus.REJECTED.value, "heuristic", status_reason)
+    if detail is not None:
+        where_params += (detail,)
+    cursor = connection.execute(
+        "UPDATE targets SET status = ?, status_reason = NULL, rejection_category = NULL, "
+        "rejection_detail = NULL, validated_at = NULL, attempts = 0, updated_at = ? "
+        f"WHERE status = ? AND rejection_category = ? AND status_reason = ? AND {detail_clause}",
+        (TargetStatus.DISCOVERED.value, now_iso, *where_params),
+    )
+    return cursor.rowcount
 
 
 def increment_target_attempts(connection: sqlite3.Connection, nation_id: str, attempts: int, now_iso: str) -> None:

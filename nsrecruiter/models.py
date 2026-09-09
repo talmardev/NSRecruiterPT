@@ -39,3 +39,18 @@ def extract_name_base(nation_id: str) -> str:
     'yamagoochie0065' e 'yamagoochie65' partilham a base 'yamagoochie')."""
     stripped = re.sub(r"\d+$", "", nation_id)
     return stripped or nation_id
+
+
+_MIN_SIGNIFICANT_TOKEN_LENGTH = 4
+
+
+def significant_name_tokens(nation_id: str) -> set[str]:
+    """Palavras do nome (separadas por '_') com potencial para identificar um lote
+    gerado a partir de uma lista externa (ex: '2018_azerbaijan_grand_prix' e
+    '2018_german_grand_prix' partilham 'grand' e 'prix'). Ignora numeros e palavras
+    curtas de mais para serem distintivas."""
+    return {
+        token
+        for token in nation_id.split("_")
+        if len(token) >= _MIN_SIGNIFICANT_TOKEN_LENGTH and not token.isdigit()
+    }
