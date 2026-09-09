@@ -11,8 +11,9 @@ import httpx
 from nsrecruiter import db
 from nsrecruiter.api.client import NsApiClient
 from nsrecruiter.api.exceptions import NsApiError
-from nsrecruiter.api.shards import fetch_new_nations
+from nsrecruiter.api.shards import fetch_flag, fetch_new_nations, flag_matches_presets
 from nsrecruiter.api.sse import iter_sse_events
+from nsrecruiter.config import Config
 from nsrecruiter.models import TargetSource, normalize_nation
 from nsrecruiter.utils import utc_now_iso
 
@@ -80,11 +81,39 @@ async def _poll_fallback_once(connection: sqlite3.Connection, client: NsApiClien
         _record_discovery(connection, raw_name, TargetSource.POLL)
 
 
-async def force_refresh(connection: sqlite3.Connection, client: NsApiClient) -> None:
+async def _recheck_queued_flags(connection: sqlite3.Connection, client: NsApiClient, config: Config) -> None:
+    """Reavalia a bandeira de quem ja esta 'queued'. Sem isto, a prioridade de um alvo
+    ficava decidida para sempre no momento da validacao inicial -- nunca mais mudava,
+    mesmo que a nacao trocasse de bandeira entretanto (a fila pode ter horas de
+    backlog) ou que PRIORITY_FLAG_COUNTRIES fosse atualizado depois. So corre se a
+    funcionalidade estiver ativa, e nunca mexe em queued_at (nao pode alterar a
+    posicao FIFO do alvo, so a fatia de prioridade em que cai)."""
+    if not config.priority_flag_countries:
+        return
+    for row in db.list_queued_targets(connection):
+        nation_id = row["nation_id"]
+        try:
+            flag_url = await fetch_flag(client, nation_id)
+        except NsApiError as exc:
+            logger.warning("Falha ao reavaliar bandeira de %s: %s", row["nation_name"], exc)
+            continue
+        priority = flag_matches_presets(flag_url, config.priority_flag_countries)
+        if bool(row["priority"]) != priority:
+            db.set_target_priority(connection, nation_id, priority, utc_now_iso())
+            logger.info(
+                "Prioridade de %s atualizada para %s (bandeira reavaliada).",
+                row["nation_name"],
+                "sim" if priority else "nao",
+            )
+
+
+async def force_refresh(connection: sqlite3.Connection, client: NsApiClient, config: Config) -> None:
     """Verificacao manual pontual (tecla r do dashboard): um pedido a q=newnations,
-    fora do ritmo normal do coletor. Nao mexe na lista de membros da regiao."""
+    fora do ritmo normal do coletor, e reavaliacao da bandeira de quem ja esta na
+    fila. Nao mexe na lista de membros da regiao."""
     logger.info("Atualizacao manual da fila pedida.")
     await _poll_fallback_once(connection, client)
+    await _recheck_queued_flags(connection, client, config)
 
 
 async def run_collector(

@@ -255,8 +255,10 @@ def next_discovered_target(connection: sqlite3.Connection) -> sqlite3.Row | None
 def mark_target_queued(
     connection: sqlite3.Connection, nation_id: str, now_iso: str, priority: bool = False
 ) -> None:
+    # attempts volta a 0: o contador de retries da fase de validacao nao deve
+    # descontar das tentativas de revalidacao pre-envio (fase seguinte, dispatcher.py).
     connection.execute(
-        "UPDATE targets SET status = ?, queued_at = ?, validated_at = ?, updated_at = ?, priority = ? "
+        "UPDATE targets SET status = ?, queued_at = ?, validated_at = ?, updated_at = ?, priority = ?, attempts = 0 "
         "WHERE nation_id = ?",
         (TargetStatus.QUEUED.value, now_iso, now_iso, now_iso, int(priority), nation_id),
     )
@@ -352,6 +354,16 @@ def list_queued_targets(connection: sqlite3.Connection) -> list[sqlite3.Row]:
         f"SELECT * FROM targets WHERE status = ? {_QUEUE_ORDER_BY}",
         (TargetStatus.QUEUED.value,),
     ).fetchall()
+
+
+def set_target_priority(connection: sqlite3.Connection, nation_id: str, priority: bool, now_iso: str) -> None:
+    """So mexe em `priority` -- nunca em `queued_at`, para nao alterar a posicao do
+    alvo dentro da sua fatia FIFO. So aplica a quem ainda estiver 'queued' nesse
+    momento, para nao reviver um alvo que o emissor ja tenha despachado entretanto."""
+    connection.execute(
+        "UPDATE targets SET priority = ?, updated_at = ? WHERE nation_id = ? AND status = ?",
+        (int(priority), now_iso, nation_id, TargetStatus.QUEUED.value),
+    )
 
 
 def toggle_target_pin(connection: sqlite3.Connection, nation_id: str, now_iso: str) -> bool:

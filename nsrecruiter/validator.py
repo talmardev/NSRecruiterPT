@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from nsrecruiter import db
 from nsrecruiter.api.client import NsApiClient
-from nsrecruiter.api.exceptions import NsApiError
+from nsrecruiter.api.exceptions import NotFoundError, NsApiError
 from nsrecruiter.api.shards import fetch_tgcanrecruit, fetch_tgcanrecruit_and_flag, flag_matches_presets
 from nsrecruiter.config import Config
 from nsrecruiter.models import MIN_SHARED_NAME_TOKENS, extract_name_base, significant_name_tokens
@@ -128,6 +128,12 @@ async def _validate_one(
             can_recruit, flag_url = await fetch_tgcanrecruit_and_flag(client, nation_id, config.region)
         else:
             can_recruit, flag_url = await fetch_tgcanrecruit(client, nation_id, config.region), None
+    except NotFoundError:
+        # Permanente (a nacao deixou de existir entretanto) -- nao vale a pena gastar
+        # as tentativas com backoff, que sao para falhas transitorias.
+        db.mark_target_rejected(connection, nation_id, "nacao deixou de existir (404 na validacao)", now_iso)
+        logger.info("Rejeitado %s: nacao ja nao existe.", row["nation_name"])
+        return
     except NsApiError as exc:
         attempts = row["attempts"] + 1
         if attempts >= _MAX_VALIDATION_ATTEMPTS:

@@ -18,5 +18,11 @@ class GeneralRateLimitedError(NsApiError):
         self.retry_after = retry_after
 
 
+class NotFoundError(NsApiError):
+    """A API devolveu 404 -- a nacao/regiao pedida nao existe (ja nao existe, no caso
+    de uma nacao que estava na fila ha algum tempo). Ao contrario de um erro de rede
+    ou XML invalido, isto e permanente: nao vale a pena tentar de novo."""
+
+
 class NetworkError(NsApiError):
     """Falha de rede (timeout, ligacao recusada, etc.) -- candidata a retry com backoff."""

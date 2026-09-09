@@ -823,7 +823,7 @@ async def run_dashboard(
             runtime_status.toggle_pause()
             logger.info("Pausado (tecla p)." if runtime_status.paused else "Retomado (tecla p).")
         elif lowered == "r":
-            asyncio.create_task(force_refresh(connection, api_client))
+            asyncio.create_task(force_refresh(connection, api_client, config))
         elif lowered == "l":
             _enter_queue_view()
         elif lowered == "v":

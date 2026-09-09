@@ -6,11 +6,13 @@ import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 
 from nsrecruiter.api.client import NsApiClient
+from nsrecruiter.api.exceptions import NsApiError
 from nsrecruiter.models import normalize_nation
 
 
-class ShardParseError(Exception):
-    """A resposta da API veio num formato inesperado."""
+class ShardParseError(NsApiError):
+    """A resposta da API veio num formato inesperado -- tratada como as outras
+    falhas de API (log e nova tentativa depois), nao deve derrubar a aplicacao."""
 
 
 def parse_tgcanrecruit(xml_text: str) -> bool:
@@ -84,6 +86,13 @@ async def fetch_tgcanrecruit_and_flag(
         {"nation": nation_id, "q": "tgcanrecruit+flag", "from": from_region}
     )
     return parse_tgcanrecruit(response.text), parse_flag_url(response.text)
+
+
+async def fetch_flag(client: NsApiClient, nation_id: str) -> str:
+    """So a bandeira, sem tgcanrecruit -- para reavaliar prioridade sem gastar uma
+    validacao de recrutamento (usado no refresh manual, tecla 'r')."""
+    response = await client.request({"nation": nation_id, "q": "flag"})
+    return parse_flag_url(response.text)
 
 
 async def fetch_region_nations(client: NsApiClient, region: str) -> set[str]:

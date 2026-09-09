@@ -5,7 +5,7 @@ import asyncio
 
 import httpx
 
-from nsrecruiter.api.exceptions import ForbiddenError, GeneralRateLimitedError, NetworkError
+from nsrecruiter.api.exceptions import ForbiddenError, GeneralRateLimitedError, NetworkError, NotFoundError
 from nsrecruiter.api.ratelimiter import GeneralRateLimiter, RateLimitSnapshot
 
 API_BASE_URL = "https://www.nationstates.net/cgi-bin/api.cgi"
@@ -90,6 +90,9 @@ class NsApiClient:
             raise ForbiddenError(
                 "A API devolveu 403 -- confirma se o User-Agent esta correto e identificavel."
             )
+        if response.status_code == 404:
+            alvo = params.get("nation") or params.get("region") or "?"
+            raise NotFoundError(f"A API devolveu 404 -- nao existe: {alvo}")
         if response.status_code == 429:
             retry_after = parse_retry_after(response) or 30.0
             self._limiter.register_429(retry_after)

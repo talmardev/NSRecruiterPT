@@ -12,7 +12,7 @@ import sqlite3
 
 from nsrecruiter import db
 from nsrecruiter.api.client import NsApiClient
-from nsrecruiter.api.exceptions import NsApiError
+from nsrecruiter.api.exceptions import NotFoundError, NsApiError
 from nsrecruiter.api.ratelimiter import TelegramRateLimiter
 from nsrecruiter.api.shards import fetch_tgcanrecruit
 from nsrecruiter.api.telegrams import send_telegram
@@ -24,6 +24,13 @@ logger = logging.getLogger("nsrecruiter.dispatcher")
 
 _IDLE_POLL_INTERVAL_SECONDS = 2.0
 _WAIT_CHECK_INTERVAL_SECONDS = 1.0
+
+# Mesmo perfil conservador do validador (validator.py) para falhas de API na
+# revalidacao pre-envio -- sem isto, um alvo que falha sempre da mesma forma fica
+# preso a cabeca da fila (FIFO, um so worker) e martela a API sem pausa, o que
+# esgota o limite geral partilhado e bloqueia ate os envios a outras nacoes.
+_BACKOFF_SCHEDULE_SECONDS = (5.0, 10.0, 20.0)
+_MAX_REVALIDATION_ATTEMPTS = 3
 
 
 def _next_target(
@@ -62,8 +69,29 @@ async def _dispatch_one(
 
     try:
         can_still_recruit = await fetch_tgcanrecruit(client, nation_id, config.region)
+    except NotFoundError:
+        # Permanente (a nacao deixou de existir entretanto) -- nao vale a pena gastar
+        # as tentativas com backoff, que sao para falhas transitorias.
+        db.mark_target_rejected(connection, nation_id, "nacao deixou de existir (404 na revalidacao)", now_iso)
+        logger.info("Rejeitado na revalidacao final: %s (nacao ja nao existe).", row["nation_name"])
+        return
     except NsApiError as exc:
-        logger.warning("Falha ao revalidar %s antes do envio (%s); tenta-se de novo.", row["nation_name"], exc)
+        attempts = row["attempts"] + 1
+        if attempts >= _MAX_REVALIDATION_ATTEMPTS:
+            db.mark_target_rejected(
+                connection, nation_id, f"falha a revalidar antes do envio apos {attempts} tentativas: {exc}", now_iso
+            )
+            logger.warning(
+                "Desisti de revalidar %s antes do envio apos %d tentativas: %s", row["nation_name"], attempts, exc
+            )
+            return
+        db.increment_target_attempts(connection, nation_id, attempts, now_iso)
+        backoff = _BACKOFF_SCHEDULE_SECONDS[min(attempts - 1, len(_BACKOFF_SCHEDULE_SECONDS) - 1)]
+        logger.warning(
+            "Falha ao revalidar %s antes do envio (tentativa %d/%d, %s); nova tentativa em %.0fs.",
+            row["nation_name"], attempts, _MAX_REVALIDATION_ATTEMPTS, exc, backoff,
+        )
+        await asyncio.sleep(backoff)
         return
 
     if not can_still_recruit:
@@ -127,14 +155,18 @@ async def run_dispatcher(
         if runtime_status.shutdown_requested.is_set():
             break
 
+        await _wait_for_cooldown(tg_limiter, runtime_status)
+        if runtime_status.shutdown_requested.is_set():
+            break
+
+        # Escolhido so agora, depois do cooldown -- nao antes de esperar. O cooldown
+        # pode demorar ate send_interval_seconds (182s por omissao); se o alvo fosse
+        # escolhido antes de esperar, um pin ou mudanca de prioridade feita durante essa
+        # espera nunca influenciava o envio prestes a acontecer, so o seguinte.
         row = _next_target(connection, dry_run, dry_run_sent)
         if row is None:
             await runtime_status.sleep_or_shutdown(_IDLE_POLL_INTERVAL_SECONDS)
             continue
-
-        await _wait_for_cooldown(tg_limiter, runtime_status)
-        if runtime_status.shutdown_requested.is_set():
-            break
 
         runtime_status.currently_dispatching = True
         try:
