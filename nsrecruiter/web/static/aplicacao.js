@@ -209,6 +209,7 @@
       ciano: variavelCss("--cyan"),
       amarelo: variavelCss("--yellow"),
       laranja: variavelCss("--orange"),
+      fonteMono: variavelCss("--fonte-mono"),
     };
   }
 
@@ -219,8 +220,8 @@
       maintainAspectRatio: false,
       animation: { duration: 250 },
       plugins: {
-        legend: { labels: { color: paleta.texto, boxWidth: 12, font: { size: 11 } } },
-        tooltip: { titleFont: { size: 11 }, bodyFont: { size: 11 } },
+        legend: { labels: { color: paleta.texto, boxWidth: 12, font: { size: 11, family: paleta.fonteMono } } },
+        tooltip: { titleFont: { size: 11, family: paleta.fonteMono }, bodyFont: { size: 11, family: paleta.fonteMono } },
       },
       scales: {},
     };
@@ -267,9 +268,9 @@
       },
       options: opcoesBase({
         scales: {
-          x: { ticks: { color: paleta.texto, maxRotation: 0, autoSkip: true, font: { size: 10 } }, grid: { display: false } },
-          y: { beginAtZero: true, ticks: { color: paleta.texto, precision: 0 }, grid: { color: paleta.grelha } },
-          y1: { beginAtZero: true, position: "right", ticks: { color: paleta.texto, precision: 0 }, grid: { display: false } },
+          x: { ticks: { color: paleta.texto, maxRotation: 0, autoSkip: true, font: { size: 10, family: paleta.fonteMono } }, grid: { display: false } },
+          y: { beginAtZero: true, ticks: { color: paleta.texto, precision: 0, font: { family: paleta.fonteMono } }, grid: { color: paleta.grelha } },
+          y1: { beginAtZero: true, position: "right", ticks: { color: paleta.texto, precision: 0, font: { family: paleta.fonteMono } }, grid: { display: false } },
         },
       }),
     });
@@ -281,8 +282,8 @@
         indexAxis: "y",
         plugins: { legend: { display: false } },
         scales: {
-          x: { beginAtZero: true, ticks: { color: paleta.texto, precision: 0 }, grid: { color: paleta.grelha } },
-          y: { ticks: { color: paleta.texto, font: { size: 11 } }, grid: { display: false } },
+          x: { beginAtZero: true, ticks: { color: paleta.texto, precision: 0, font: { family: paleta.fonteMono } }, grid: { color: paleta.grelha } },
+          y: { ticks: { color: paleta.texto, font: { size: 11, family: paleta.fonteMono } }, grid: { display: false } },
         },
       }),
     });
@@ -302,8 +303,12 @@
         indexAxis: "y",
         plugins: { legend: { display: false } },
         scales: {
-          x: { beginAtZero: true, ticks: { color: paleta.texto, precision: 0 }, grid: { color: paleta.grelha } },
-          y: { ticks: { color: paleta.texto, font: { size: 10 } }, grid: { display: false } },
+          x: { beginAtZero: true, ticks: { color: paleta.texto, precision: 0, font: { family: paleta.fonteMono } }, grid: { color: paleta.grelha } },
+          y: {
+            afterFit: function (escala) { escala.width = Math.max(escala.width, 380); },
+            ticks: { color: paleta.texto, font: { size: 8, family: paleta.fonteMono } },
+            grid: { display: false },
+          },
         },
       }),
     });
@@ -315,8 +320,8 @@
         indexAxis: "y",
         plugins: { legend: { display: false } },
         scales: {
-          x: { beginAtZero: true, ticks: { color: paleta.texto, precision: 0 }, grid: { color: paleta.grelha } },
-          y: { ticks: { color: paleta.texto, font: { size: 10 } }, grid: { display: false } },
+          x: { beginAtZero: true, ticks: { color: paleta.texto, precision: 0, font: { family: paleta.fonteMono } }, grid: { color: paleta.grelha } },
+          y: { ticks: { color: paleta.texto, font: { size: 9, family: paleta.fonteMono } }, grid: { display: false } },
         },
       }),
     });
@@ -373,7 +378,7 @@
   function desenharGraficoMotivos(grafico, linhas) {
     linhas = linhas || [];
     grafico.data.labels = linhas.map(function (linha) {
-      return linha.motivo.length > 42 ? linha.motivo.slice(0, 39) + "..." : linha.motivo;
+      return linha.motivo.length > 90 ? linha.motivo.slice(0, 87) + "..." : linha.motivo;
     });
     grafico.data.datasets[0].data = linhas.map(function (linha) { return linha.quantidade; });
     grafico.update();
