@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NSRecruiter: Dashboard Web</title>
+<link rel="stylesheet" href="/estilo.css" />
+</head>
+<body>
+<div class="page">
+
+  <header class="topbar">
+    <div class="topbar-title">
+      <h1>NSRecruiter</h1>
+      <span class="subtitle">Dashboard web</span>
+    </div>
+    <div class="topbar-meta">
+      <span id="meta-region" class="meta-pill">Regiao: --</span>
+      <span id="meta-nation" class="meta-pill">Nacao: --</span>
+      <span id="dry-run-badge" class="meta-pill badge-dryrun" hidden>MODO DRY-RUN</span>
+    </div>
+    <div class="topbar-actions">
+      <span id="live-badge" class="live-badge live-unknown">
+        <span class="live-dot"></span>
+        <span id="live-badge-text">a verificar...</span>
+      </span>
+      <button id="theme-toggle" class="icon-button" type="button" title="Alternar modo claro/escuro" aria-label="Alternar modo claro/escuro">
+        <span id="theme-toggle-icon" aria-hidden="true">&#127769;</span>
+      </button>
+    </div>
+  </header>
+
+  <div id="offline-banner" class="offline-banner" hidden>
+    O processo principal do NSRecruiter nao esta ligado neste momento. Os numeros
+    abaixo sao os ultimos gravados na base de dados. Os limites e o estado ao vivo
+    so aparecem enquanto o <code>python -m nsrecruiter</code> estiver a correr.
+  </div>
+
+  <div id="no-data-banner" class="offline-banner" hidden>
+    Ainda nao existe base de dados (<code>data/nsrecruiter.db</code>). Corre o
+    NSRecruiter pelo menos uma vez para comecar a ver estatisticas aqui.
+  </div>
+
+  <main>
+
+    <section class="panel" id="panel-live">
+      <h2>Estado e limites em tempo real</h2>
+      <div class="live-grid">
+        <div class="live-state">
+          <span class="label">Estado</span>
+          <span id="app-state-pill" class="state-pill state-unknown">DESCONHECIDO</span>
+          <span id="uptime" class="uptime">Uptime: --:--:--</span>
+        </div>
+        <div class="live-bar-block">
+          <div class="live-bar-header">
+            <span>Proximo envio</span>
+            <span id="next-send-label">--:--</span>
+          </div>
+          <div class="bar-track"><div id="cooldown-bar" class="bar-fill bar-cyan" style="width:0%"></div></div>
+        </div>
+        <div class="live-bar-block">
+          <div class="live-bar-header">
+            <span>Limite geral da API</span>
+            <span id="general-limit-label">sem dados</span>
+          </div>
+          <div class="bar-track"><div id="general-bar" class="bar-fill bar-green" style="width:0%"></div></div>
+        </div>
+        <div id="retry-line" class="retry-line">Retry-After ativo: nenhuma</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Estatisticas</h2>
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat-card"><span class="stat-value" id="stat-sent">0 / 0</span><span class="stat-label">Enviados hoje / total</span></div>
+        <div class="stat-card"><span class="stat-value" id="stat-success-rate">--</span><span class="stat-label">Taxa de sucesso</span></div>
+        <div class="stat-card"><span class="stat-value" id="stat-queue">0</span><span class="stat-label">Tamanho da fila</span></div>
+        <div class="stat-card"><span class="stat-value" id="stat-rejected-direct">0</span><span class="stat-label">Rejeitados (API direta)</span></div>
+        <div class="stat-card"><span class="stat-value" id="stat-rejected-pattern">0</span><span class="stat-label">Rejeitados (padroes)</span></div>
+        <div class="stat-card"><span class="stat-value" id="stat-expired">0</span><span class="stat-label">Removidos (expirados)</span></div>
+        <div class="stat-card"><span class="stat-value" id="stat-rate-hour">0/h</span><span class="stat-label">Ritmo (ultima hora)</span></div>
+        <div class="stat-card"><span class="stat-value" id="stat-projection">~0</span><span class="stat-label">Projecao 24h</span></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Envios ao longo do tempo</h2>
+        <div class="segmented" id="timeseries-toggle">
+          <button type="button" class="segmented-btn is-active" data-range="hourly">Ultimas 48h</button>
+          <button type="button" class="segmented-btn" data-range="daily">Ultimos 30 dias</button>
+          <button type="button" class="segmented-btn" data-range="all">Historico completo</button>
+        </div>
+      </div>
+      <div class="chart-wrap chart-wrap-wide"><canvas id="chart-timeseries"></canvas></div>
+    </section>
+
+    <div class="two-col">
+      <section class="panel">
+        <h2>Funil de alvos</h2>
+        <div class="chart-wrap"><canvas id="chart-funnel"></canvas></div>
+      </section>
+
+      <section class="panel">
+        <h2>Rejeicoes por categoria</h2>
+        <div class="chart-wrap"><canvas id="chart-rejection-category"></canvas></div>
+      </section>
+    </div>
+
+    <div class="two-col">
+      <section class="panel">
+        <h2>Motivos de rejeicao</h2>
+        <div class="chart-wrap"><canvas id="chart-rejection-reasons"></canvas></div>
+      </section>
+
+      <section class="panel">
+        <h2>Motivos de falha de envio</h2>
+        <div class="chart-wrap"><canvas id="chart-failure-reasons"></canvas></div>
+      </section>
+    </div>
+
+  </main>
+
+  <footer class="page-footer">
+    <span id="generated-at">--</span>
+  </footer>
+
+</div>
+
+<script src="/vendor/chart.umd.min.js"></script>
+<script src="/aplicacao.js"></script>
+</body>
+</html>

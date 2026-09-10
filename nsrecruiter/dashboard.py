@@ -6,11 +6,15 @@ de valor usam largura fixa (zero-padding) para nao "saltarem" visualmente.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sqlite3
 import time
+import webbrowser
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http.server import ThreadingHTTPServer
+from threading import Thread
 
 from rich.console import Group
 from rich.layout import Layout
@@ -29,6 +33,7 @@ from nsrecruiter.logging_setup import LogEntry
 from nsrecruiter.models import MIN_NAME_BASE_LENGTH, MIN_SHARED_NAME_TOKENS, AppState, TargetStatus
 from nsrecruiter.runtime_status import RuntimeStatus
 from nsrecruiter.utils import iso_to_unix_timestamp, utc_now_iso
+from nsrecruiter.web.servidor import iniciar_em_thread
 
 logger = logging.getLogger("nsrecruiter.dashboard")
 
@@ -127,6 +132,16 @@ class _RejectionReviewState:
     mode: str = "rejected"
     selected_rejected_key: tuple[str, str | None] | None = None
     selected_suggestion_key: tuple[str, ...] | None = None
+
+
+@dataclass
+class _ServidorWebGuardado:
+    """Guarda o servidor web (tecla 'w'), arrancado no maximo uma vez por sessao.
+    Premir 'w' outra vez so reabre o browser na mesma URL, em vez de arrancar outro."""
+
+    servidor: ThreadingHTTPServer | None = None
+    thread: Thread | None = None
+    url: str | None = None
 
 
 def _format_mmss(seconds: float) -> str:
@@ -648,6 +663,42 @@ def _render_log(state: DashboardState) -> Panel:
     return Panel(Group(*lines), title="Log", border_style="grey50")
 
 
+def _gravar_estado_ao_vivo(ligacao: sqlite3.Connection, estado: DashboardState) -> None:
+    """Grava o estado ao vivo em kv_state a cada 'tick'. E assim que o dashboard web
+    (tecla 'w', ou o comando standalone `ns-recruiter-web`) sabe que este processo esta
+    mesmo a correr: se 'atualizado_em_unix' ficar parado ha mais de alguns segundos, o
+    dashboard web assume que o processo foi desligado (ver nsrecruiter.web.consultas)."""
+    dados = {
+        "modo_simulacao": estado.dry_run,
+        "estado_app": estado.app_state.value,
+        "segundos_atividade": estado.uptime_seconds,
+        "segundos_ate_proximo_envio": estado.seconds_until_next_send,
+        "intervalo_envio_segundos": estado.send_interval_seconds,
+        "restante_geral": estado.general_remaining,
+        "limite_geral": estado.general_limit,
+        "segundos_espera_geral": estado.general_wait_seconds,
+        "segundos_bloqueio": estado.blocked_or_limited_seconds,
+        "motivo_bloqueio": estado.blocked_or_limited_reason,
+        "atualizado_em_unix": estado.now_unix,
+    }
+    db.set_kv(ligacao, "estado_ao_vivo", json.dumps(dados), utc_now_iso())
+
+
+def _abrir_painel_web(guardado: _ServidorWebGuardado, configuracao: Config) -> None:
+    """Tecla 'w': arranca o servidor web (uma so vez por sessao) e abre o browser."""
+    if guardado.servidor is None:
+        try:
+            servidor, thread, url = iniciar_em_thread(configuracao)
+        except OSError:
+            logger.exception("Nao foi possivel arrancar a interface web.")
+            return
+        guardado.servidor, guardado.thread, guardado.url = servidor, thread, url
+        logger.info("Interface web disponivel em %s", url)
+    else:
+        logger.info("Interface web ja em execucao em %s", guardado.url)
+    webbrowser.open(guardado.url)
+
+
 def _render_footer(mode: str) -> Panel:
     text = Text()
     if mode == "queue":
@@ -690,6 +741,8 @@ def _render_footer(mode: str) -> Panel:
         text.append(" ver/priorizar fila     ")
         text.append(" v ", style="bold black on grey70")
         text.append(" rever rejeicoes     ")
+        text.append(" w ", style="bold black on grey70")
+        text.append(" abrir no browser     ")
         text.append(" q ", style="bold black on grey70")
         text.append(" sair (termina o envio em curso)")
     return Panel(text, border_style="grey50")
@@ -743,6 +796,7 @@ async def run_dashboard(
     layout = build_layout()
     queue_view = _QueueViewState()
     rejection_review = _RejectionReviewState()
+    servidor_web = _ServidorWebGuardado()
 
     def _enter_queue_view() -> None:
         rejection_review.active = False
@@ -859,6 +913,8 @@ async def run_dashboard(
             _enter_queue_view()
         elif lowered == "v":
             _enter_rejection_review()
+        elif lowered == "w":
+            _abrir_painel_web(servidor_web, config)
 
     keyboard_task = asyncio.create_task(read_keys(on_key))
     try:
@@ -873,6 +929,7 @@ async def run_dashboard(
                     rejection_selected_key=rejection_review.selected_rejected_key,
                     suggestion_selected_key=rejection_review.selected_suggestion_key,
                 )
+                _gravar_estado_ao_vivo(connection, state)
                 render(layout, state)
                 live.refresh()
                 browsing = queue_view.active or rejection_review.active
