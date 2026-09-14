@@ -12,6 +12,7 @@ from nsrecruiter import db
 from nsrecruiter.api.client import NsApiClient
 from nsrecruiter.api.ratelimiter import GeneralRateLimiter, TelegramRateLimiter
 from nsrecruiter.api.shards import fetch_region_nations
+from nsrecruiter.backup import correr_backups_periodicos
 from nsrecruiter.collector import run_collector
 from nsrecruiter.config import Config
 from nsrecruiter.dashboard import run_dashboard
@@ -79,7 +80,20 @@ async def run_app(config: Config, log_buffer: "deque[LogEntry]", dry_run: bool =
         name="dashboard",
     )
 
+    tarefa_backup: asyncio.Task[None] | None = None
+    if config.pasta_backup is not None:
+        assert config.intervalo_backup_horas is not None  # garantido por load_config
+        logger.info(
+            "Backup automatico ativo: a cada %gh, em %s.", config.intervalo_backup_horas, config.pasta_backup
+        )
+        tarefa_backup = asyncio.create_task(
+            correr_backups_periodicos(connection, config.db_path, config.pasta_backup, config.intervalo_backup_horas),
+            name="backup",
+        )
+
     tasks = {collector_task, validator_task, expiry_task, dispatcher_task, dashboard_task}
+    if tarefa_backup is not None:
+        tasks.add(tarefa_backup)
     try:
         # Qualquer uma a terminar primeiro (normalmente o dashboard, quando 'q' e premido)
         # avanca para a limpeza -- gather() ficaria bloqueado a espera das outras, que nunca acabam sozinhas.
@@ -94,6 +108,8 @@ async def run_app(config: Config, log_buffer: "deque[LogEntry]", dry_run: bool =
         collector_task.cancel()
         validator_task.cancel()
         expiry_task.cancel()
+        if tarefa_backup is not None:
+            tarefa_backup.cancel()
         if not dashboard_task.done():
             dashboard_task.cancel()
         if not dispatcher_task.done():
@@ -105,7 +121,9 @@ async def run_app(config: Config, log_buffer: "deque[LogEntry]", dry_run: bool =
             except asyncio.CancelledError:
                 pass
         await asyncio.gather(
-            collector_task, validator_task, expiry_task, dashboard_task, dispatcher_task, return_exceptions=True
+            collector_task, validator_task, expiry_task, dashboard_task, dispatcher_task,
+            *([tarefa_backup] if tarefa_backup is not None else []),
+            return_exceptions=True,
         )
         await api_client.aclose()
         connection.close()

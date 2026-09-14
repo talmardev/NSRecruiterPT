@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
+from nsrecruiter.config import INTERVALO_BACKUP_OMISSAO_HORAS, INTERVALOS_BACKUP_PERMITIDOS_HORAS
 from nsrecruiter.security import mask_secret
 
 console = Console()
@@ -26,6 +27,7 @@ class _Field:
     explanation: str
     secret: bool = False
     optional: bool = False
+    escolhas: tuple[str, ...] | None = None
 
 
 _FIELDS = [
@@ -70,6 +72,21 @@ _FIELDS = [
         "Deixa em branco para desativar.",
         optional=True,
     ),
+    _Field(
+        "PASTA_BACKUP", "Pasta de backup (opcional)",
+        "Uma pasta fora deste projeto (ex: numa drive externa ou outro disco) onde gravar "
+        "copias periodicas da base de dados. Protege contra perder a fila e o historico "
+        "se este disco falhar. Deixa em branco para desativar os backups automaticos.",
+        optional=True,
+    ),
+    _Field(
+        "INTERVALO_BACKUP_HORAS", "Intervalo entre backups, em horas (opcional)",
+        "De quanto em quanto tempo gravar uma copia nova. So tem efeito se a pasta de "
+        f"backup acima estiver preenchida (usa {int(INTERVALO_BACKUP_OMISSAO_HORAS)}h por "
+        "omissao se deixares em branco).",
+        optional=True,
+        escolhas=tuple(str(int(h)) for h in INTERVALOS_BACKUP_PERMITIDOS_HORAS),
+    ),
 ]
 
 
@@ -109,7 +126,11 @@ def _prompt_field(field: _Field, existing_value: str | None) -> str:
 
     default = existing_value or ""
     while True:
-        typed = Prompt.ask(field.label, default=default).strip()
+        # choices=None e equivalente a omitir o argumento ao Rich (Prompt.ask): so
+        # restringe quando o campo (ex: INTERVALO_BACKUP_HORAS) define field.escolhas.
+        # default="" fica sempre fora dessa validacao (Enter em branco devolve o
+        # default sem o verificar contra a lista).
+        typed = Prompt.ask(field.label, default=default, choices=field.escolhas).strip()
         if typed or field.optional:
             return typed
         console.print("[red]Este campo e obrigatorio.[/red]")

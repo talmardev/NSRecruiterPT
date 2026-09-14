@@ -100,6 +100,12 @@ def run_check() -> int:
                 logger.info("  %s = %s", field_name, value)
             logger.info("Base de dados pronta em %s", config.db_path)
             logger.info("Intervalo de envio configurado: %.0fs", config.send_interval_seconds)
+            if config.pasta_backup is not None:
+                logger.info(
+                    "Backup automatico: a cada %gh, em %s.", config.intervalo_backup_horas, config.pasta_backup
+                )
+            else:
+                logger.info("Backup automatico: desativado.")
     except InstanceAlreadyRunningError as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_LOCK_ERROR

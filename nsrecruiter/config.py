@@ -13,6 +13,10 @@ APP_VERSION = "0.1.0"
 MIN_SEND_INTERVAL_SECONDS = 180.0
 DEFAULT_SEND_INTERVAL_SECONDS = 182.0
 
+# Opcoes oferecidas no assistente de configuracao para o intervalo de backup.
+INTERVALOS_BACKUP_PERMITIDOS_HORAS = (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 12.0, 24.0)
+INTERVALO_BACKUP_OMISSAO_HORAS = 24.0
+
 _REQUIRED_VARS = (
     "NS_REGION",
     "NS_NATION",
@@ -40,6 +44,8 @@ class Config:
     log_dir: Path
     log_level: str
     priority_flag_countries: tuple[str, ...] = ()
+    pasta_backup: Path | None = None
+    intervalo_backup_horas: float | None = None
 
     @property
     def user_agent(self) -> str:
@@ -103,6 +109,29 @@ def load_config(env_path: Path | None = None) -> Config:
         name.strip() for name in priority_flags_raw.split(",") if name.strip()
     )
 
+    pasta_backup_bruta = (os.environ.get("PASTA_BACKUP") or "").strip()
+    pasta_backup = Path(pasta_backup_bruta) if pasta_backup_bruta else None
+
+    intervalo_backup_horas: float | None = None
+    if pasta_backup is not None:
+        intervalo_backup_bruto = (os.environ.get("INTERVALO_BACKUP_HORAS") or "").strip()
+        if not intervalo_backup_bruto:
+            intervalo_backup_horas = INTERVALO_BACKUP_OMISSAO_HORAS
+        else:
+            try:
+                intervalo_backup_valor = float(intervalo_backup_bruto)
+            except ValueError as exc:
+                raise ConfigError(
+                    f"INTERVALO_BACKUP_HORAS tem de ser um numero (valor atual: '{intervalo_backup_bruto}')."
+                ) from exc
+            if intervalo_backup_valor not in INTERVALOS_BACKUP_PERMITIDOS_HORAS:
+                opcoes = ", ".join(str(int(h)) for h in INTERVALOS_BACKUP_PERMITIDOS_HORAS)
+                raise ConfigError(
+                    f"INTERVALO_BACKUP_HORAS tem de ser um destes valores: {opcoes} "
+                    f"(valor atual: '{intervalo_backup_bruto}')."
+                )
+            intervalo_backup_horas = intervalo_backup_valor
+
     return Config(
         region=os.environ["NS_REGION"].strip(),
         nation=os.environ["NS_NATION"].strip(),
@@ -116,4 +145,6 @@ def load_config(env_path: Path | None = None) -> Config:
         log_dir=Path(os.environ.get("LOG_DIR", "data/logs")),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         priority_flag_countries=priority_flag_countries,
+        pasta_backup=pasta_backup,
+        intervalo_backup_horas=intervalo_backup_horas,
     )

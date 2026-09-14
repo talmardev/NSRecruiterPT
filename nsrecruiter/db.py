@@ -152,13 +152,18 @@ def count_targets_with_name_base_since(
     connection: sqlite3.Connection, name_base: str, exclude_nation_id: str, since_iso: str, before_iso: str
 ) -> int:
     """Quantos outros alvos com a mesma base de nome (sem sufixo numerico) foram
-    descobertos entre `since_iso` (inclusive) e `before_iso` (exclusive) -- usado para
+    descobertos entre `since_iso` (inclusive) e `before_iso` (exclusive). Usado para
     detetar provaveis alts. O limite superior conta so quem apareceu ANTES deste alvo,
-    para que o primeiro de uma rajada nunca seja rejeitado por causa dos que vem a seguir."""
+    para que o primeiro de uma rajada nunca seja rejeitado por causa dos que vem a seguir.
+    Em caso de empate exato em discovered_at (resolucao de 1s, onde uma rajada rapida cai
+    facilmente no mesmo segundo), desempata pela ordem de insercao (rowid); sem isto,
+    uma rajada inteira descoberta no mesmo segundo nunca se apanhava a ela propria."""
     row = connection.execute(
         "SELECT COUNT(*) AS n FROM targets "
-        "WHERE name_base = ? AND nation_id != ? AND discovered_at >= ? AND discovered_at < ?",
-        (name_base, exclude_nation_id, since_iso, before_iso),
+        "WHERE name_base = ? AND nation_id != ? AND discovered_at >= ? AND ("
+        "  discovered_at < ? OR (discovered_at = ? AND rowid < (SELECT rowid FROM targets WHERE nation_id = ?))"
+        ")",
+        (name_base, exclude_nation_id, since_iso, before_iso, before_iso, exclude_nation_id),
     ).fetchone()
     return row["n"]
 
@@ -172,8 +177,10 @@ def count_targets_sharing_tokens_since(
     min_shared_tokens: int,
 ) -> int:
     """Quantas outras nacoes descobertas entre `since_iso` (inclusive) e `before_iso`
-    (exclusive) partilham pelo menos `min_shared_tokens` das palavras dadas -- usado
-    para detetar lotes gerados a partir de listas externas (ex: '..._grand_prix')."""
+    (exclusive) partilham pelo menos `min_shared_tokens` das palavras dadas. Usado
+    para detetar lotes gerados a partir de listas externas (ex: '..._grand_prix').
+    Mesmo desempate por rowid que count_targets_with_name_base_since para empates
+    exatos em discovered_at (resolucao de 1s)."""
     token_list = list(tokens)
     if not token_list:
         return 0
@@ -186,11 +193,14 @@ def count_targets_sharing_tokens_since(
         WHERE tnt.token IN ({placeholders})
           AND t.nation_id != ?
           AND t.discovered_at >= ?
-          AND t.discovered_at < ?
+          AND (
+            t.discovered_at < ?
+            OR (t.discovered_at = ? AND t.rowid < (SELECT rowid FROM targets WHERE nation_id = ?))
+          )
         GROUP BY t.nation_id
         HAVING COUNT(DISTINCT tnt.token) >= ?
         """,
-        (*token_list, exclude_nation_id, since_iso, before_iso, min_shared_tokens),
+        (*token_list, exclude_nation_id, since_iso, before_iso, before_iso, exclude_nation_id, min_shared_tokens),
     ).fetchall()
     return len(rows)
 

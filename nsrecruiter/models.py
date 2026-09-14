@@ -34,11 +34,28 @@ def normalize_nation(name: str) -> str:
     return name.strip().lower().replace(" ", "_")
 
 
+# Modificadores de direcao cardinal no inicio ou fim do nome. Decidido com o
+# utilizador depois de uma leva "North X" / "West X" / "South X" passar ao filtro
+# por so diferirem nessa palavra (menos do que o minimo de 2 palavras partilhadas
+# exigido pelo lote gerado, MIN_SHARED_NAME_TOKENS abaixo).
+_PALAVRAS_DIRECAO = frozenset({"north", "south", "east", "west"})
+
+
 def extract_name_base(nation_id: str) -> str:
-    """Nome sem o sufixo numerico final -- usado para detetar provaveis alts (ex:
-    'yamagoochie0065' e 'yamagoochie65' partilham a base 'yamagoochie')."""
+    """Nome sem o sufixo numerico final nem um modificador de direcao cardinal no
+    inicio ou fim (usado para detetar provaveis alts, ex: 'yamagoochie0065' e
+    'yamagoochie65' partilham a base 'yamagoochie'; 'north_atlantis' e
+    'south_atlantis' partilham a base 'atlantis'). So remove um nivel de cada lado:
+    nunca esvazia um nome cujas palavras sejam todas direcoes (ex: nao mexe em
+    'north' sozinho)."""
     stripped = re.sub(r"\d+$", "", nation_id)
-    return stripped or nation_id
+    partes = stripped.split("_")
+    if len(partes) > 1 and partes[0] in _PALAVRAS_DIRECAO:
+        partes = partes[1:]
+    if len(partes) > 1 and partes[-1] in _PALAVRAS_DIRECAO:
+        partes = partes[:-1]
+    base = "_".join(partes)
+    return base or stripped or nation_id
 
 
 # Partilhado entre a deteçao automatica (validator.py, janela de 30 dias) e a analise
