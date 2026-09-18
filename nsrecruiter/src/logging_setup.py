@@ -99,7 +99,7 @@ def setup_logging(log_dir: Path, level: str, secrets: dict[str, str]) -> None:
 def setup_logging_for_dashboard(
     log_dir: Path, level: str, secrets: dict[str, str], buffer: "deque[LogEntry]"
 ) -> None:
-    """Modo dashboard: nada vai diretamente para a consola -- o Live tem de ser o unico a
+    """Modo dashboard: nada vai diretamente para a consola, o Live tem de ser o unico a
     desenhar o ecra. As mesmas mensagens continuam todas a ir para o ficheiro de log."""
     masking_filter = SecretMaskingFilter(secrets)
     root = logging.getLogger("nsrecruiter")

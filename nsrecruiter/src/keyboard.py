@@ -36,7 +36,7 @@ async def _read_keys_windows(on_key: KeyCallback) -> None:
         if msvcrt.kbhit():
             raw = msvcrt.getch()
             if raw in (b"\x00", b"\xe0"):
-                # Prefixo de tecla especial (setas, F1-F12, Home/End, ...) -- o codigo
+                # Prefixo de tecla especial (setas, F1-F12, Home/End, ...): o codigo
                 # real vem sempre no byte seguinte, entregue pelo SO como par atomico.
                 scancode = msvcrt.getch()
                 arrow = _WINDOWS_ARROW_SCANCODES.get(scancode)

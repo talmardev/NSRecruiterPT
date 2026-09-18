@@ -53,7 +53,7 @@ def parse_x_retry_after(response: httpx.Response) -> float | None:
 
 
 class NsApiClient:
-    """Ponto unico de acesso ao api.cgi -- fixa v=13 e aplica sempre o limite geral."""
+    """Ponto unico de acesso ao api.cgi: fixa v=13 e aplica sempre o limite geral."""
 
     def __init__(
         self,
@@ -68,7 +68,7 @@ class NsApiClient:
 
     async def _raw_request(self, params: dict[str, str]) -> httpx.Response:
         """Aplica o limite geral (espera + atualizacao a partir dos headers) e devolve a
-        resposta tal e qual, sem interpretar o status code -- isso fica para quem chama."""
+        resposta tal e qual, sem interpretar o status code; isso fica para quem chama."""
         await asyncio.sleep(self._limiter.wait_time())
         query = {**params, "v": API_VERSION}
         try:
@@ -88,11 +88,11 @@ class NsApiClient:
 
         if response.status_code == 403:
             raise ForbiddenError(
-                "A API devolveu 403 -- confirma se o User-Agent esta correto e identificavel."
+                "A API devolveu 403: confirma se o User-Agent esta correto e identificavel."
             )
         if response.status_code == 404:
             alvo = params.get("nation") or params.get("region") or "?"
-            raise NotFoundError(f"A API devolveu 404 -- nao existe: {alvo}")
+            raise NotFoundError(f"A API devolveu 404: nao existe: {alvo}")
         if response.status_code == 429:
             retry_after = parse_retry_after(response) or 30.0
             self._limiter.register_429(retry_after)
@@ -101,7 +101,7 @@ class NsApiClient:
         return response
 
     async def request_for_send(self, params: dict[str, str]) -> httpx.Response:
-        """Para a=sendTG: nunca lanca em 429 -- pode ser o cooldown normal de TG
+        """Para a=sendTG: nunca lanca em 429, pode ser o cooldown normal de TG
         (X-Retry-After), que nao e um erro. So atualiza o limite geral se a resposta
         trouxer tambem um Retry-After genuino (sinal de que o limite geral foi atingido)."""
         response = await self._raw_request(params)

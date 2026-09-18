@@ -116,7 +116,7 @@ class DashboardState:
 @dataclass
 class _QueueViewState:
     """Estado do modo de selecao da fila (tecla 'l'), preservado entre atualizacoes
-    do dashboard -- ao contrario de DashboardState, que e reconstruido a cada 'tick'."""
+    do dashboard, ao contrario de DashboardState, que e reconstruido a cada 'tick'."""
 
     active: bool = False
     selected_nation_id: str | None = None
@@ -390,7 +390,7 @@ def _visible_queue_window(
     rows: list[sqlite3.Row], selected_nation_id: str | None, window_size: int
 ) -> tuple[list[sqlite3.Row], int]:
     """Fatia visivel da fila (janela deslizante centrada na selecao) e o indice do
-    selecionado dentro dessa fatia -- para nao tentar desenhar filas com centenas
+    selecionado dentro dessa fatia, para nao tentar desenhar filas com centenas
     de linhas de uma vez."""
     if not rows:
         return [], -1
@@ -405,7 +405,7 @@ def _visible_queue_window(
 
 
 def _render_queue_view(state: DashboardState) -> Panel:
-    title = f"Fila -- selecionar prioridade ({len(state.queue_rows)} na fila)"
+    title = f"Fila: selecionar prioridade ({len(state.queue_rows)} na fila)"
     if not state.queue_rows:
         return Panel(Text("(fila vazia)", style="dim"), title=title, border_style="grey50")
 
@@ -503,7 +503,7 @@ def _render_rejection_review(state: DashboardState) -> Panel:
 
 def _cluster_token_share_pairs(pairs: list[tuple[str, str, str, str, frozenset[str]]]) -> list[dict]:
     """Agrupa pares de nacoes que partilham palavras (de find_queued_token_share_pairs)
-    em clusters por componentes conectados -- ex: se A-B partilham {grand,prix} e B-C
+    em clusters por componentes conectados, ex: se A-B partilham {grand,prix} e B-C
     tambem, A/B/C ficam no mesmo cluster mesmo que A e C nunca tenham sido comparadas
     diretamente. Devolve uma lista de {tokens, nation_ids, names}."""
     parent: dict[str, str] = {}
@@ -552,7 +552,7 @@ def _cluster_token_share_pairs(pairs: list[tuple[str, str, str, str, frozenset[s
 
 def _cluster_name_base_rows(rows: list[sqlite3.Row]) -> list[dict]:
     """Agrupa as linhas de find_queued_name_base_clusters (uma por nacao) pela base de
-    nome partilhada -- ja vem uma linha por (name_base, nation_id), por isso e so
+    nome partilhada: ja vem uma linha por (name_base, nation_id), por isso e so
     juntar por name_base, sem union-find (ao contrario dos clusters de palavras, aqui
     so ha uma dimensao de sobreposicao possivel)."""
     groups: dict[str, dict] = {}
@@ -572,7 +572,7 @@ def _cluster_name_base_rows(rows: list[sqlite3.Row]) -> list[dict]:
 def _load_suggested_clusters(connection: sqlite3.Connection) -> list[dict]:
     """Todas as sugestoes da analise manual da fila: nacoes com palavras significativas
     partilhadas (lotes gerados) + nacoes com a mesma base de nome (provaveis alts, ex:
-    'yamagoochie0026' e 'yamagoochie26') -- duas deteçoes distintas, mesma forma de
+    'yamagoochie0026' e 'yamagoochie26'): duas deteçoes distintas, mesma forma de
     cluster, por isso partilham daqui em diante toda a navegacao/confirmacao no ecra.
     Ordenado do cluster maior para o menor: o mais impactante para rever primeiro."""
     pairs = db.find_queued_token_share_pairs(connection, MIN_SHARED_NAME_TOKENS)

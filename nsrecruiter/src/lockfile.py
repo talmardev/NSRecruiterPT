@@ -57,7 +57,7 @@ class LockFile:
         if _is_process_alive(existing_pid):
             raise InstanceAlreadyRunningError(
                 "Ja existe outra instancia do NSRecruiter em execucao "
-                f"(PID {existing_pid}). Termina-a antes de iniciar uma nova -- "
+                f"(PID {existing_pid}). Termina-a antes de iniciar uma nova: "
                 "as regras da plataforma exigem uma unica instancia por chave."
             )
         self._path.unlink(missing_ok=True)

@@ -11,7 +11,7 @@ from nsrecruiter.models import normalize_nation
 
 
 class ShardParseError(NsApiError):
-    """A resposta da API veio num formato inesperado -- tratada como as outras
+    """A resposta da API veio num formato inesperado: tratada como as outras
     falhas de API (log e nova tentativa depois), nao deve derrubar a aplicacao."""
 
 
@@ -80,8 +80,8 @@ async def fetch_tgcanrecruit(client: NsApiClient, nation_id: str, from_region: s
 async def fetch_tgcanrecruit_and_flag(
     client: NsApiClient, nation_id: str, from_region: str
 ) -> tuple[bool, str]:
-    """Mesma validacao de sempre, mas pedindo tambem a bandeira atual na mesma chamada
-    -- as shards vao "boleia" uma na outra, sem gastar pedidos extra do limite geral."""
+    """Mesma validacao de sempre, mas pedindo tambem a bandeira atual na mesma chamada:
+    as shards vao "boleia" uma na outra, sem gastar pedidos extra do limite geral."""
     response = await client.request(
         {"nation": nation_id, "q": "tgcanrecruit+flag", "from": from_region}
     )
@@ -89,7 +89,7 @@ async def fetch_tgcanrecruit_and_flag(
 
 
 async def fetch_flag(client: NsApiClient, nation_id: str) -> str:
-    """So a bandeira, sem tgcanrecruit -- para reavaliar prioridade sem gastar uma
+    """So a bandeira, sem tgcanrecruit: para reavaliar prioridade sem gastar uma
     validacao de recrutamento (usado no refresh manual, tecla 'r')."""
     response = await client.request({"nation": nation_id, "q": "flag"})
     return parse_flag_url(response.text)

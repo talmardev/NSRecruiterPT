@@ -96,7 +96,7 @@ async def run_app(config: Config, log_buffer: "deque[LogEntry]", dry_run: bool =
         tasks.add(tarefa_backup)
     try:
         # Qualquer uma a terminar primeiro (normalmente o dashboard, quando 'q' e premido)
-        # avanca para a limpeza -- gather() ficaria bloqueado a espera das outras, que nunca acabam sozinhas.
+        # avanca para a limpeza; gather() ficaria bloqueado a espera das outras, que nunca acabam sozinhas.
         done, _pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for finished in done:
             exc = finished.exception()

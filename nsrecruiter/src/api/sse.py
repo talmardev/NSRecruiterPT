@@ -1,6 +1,6 @@
 """Cliente do stream de Server-Sent Events de fundacoes.
 
-Nao passa pelo GeneralRateLimiter -- esta ligacao explicitamente nao conta
+Nao passa pelo GeneralRateLimiter: esta ligacao explicitamente nao conta
 para o rate limit da API (ver regras da plataforma). O limite aqui e de 5
 ligacoes concorrentes por IP, por isso so se abre uma de cada vez.
 """

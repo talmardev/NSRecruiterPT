@@ -209,7 +209,7 @@ def find_queued_token_share_pairs(
     connection: sqlite3.Connection, min_shared_tokens: int
 ) -> list[tuple[str, str, str, str, frozenset[str]]]:
     """Pares de nacoes atualmente na fila (status='queued') que partilham pelo menos
-    `min_shared_tokens` palavras significativas -- sem limite de tempo, ao contrario
+    `min_shared_tokens` palavras significativas, sem limite de tempo, ao contrario
     da deteçao automatica (so olha para a ultima hora). Usado pela analise manual da
     fila (tecla 'a' no ecra de revisao), para sugerir padroes ainda nao apanhados
     pelos filtros automaticos (ex: um lote mais espacado no tempo)."""
@@ -244,7 +244,7 @@ def find_queued_name_base_clusters(
 ) -> list[sqlite3.Row]:
     """Nacoes atualmente na fila (status='queued') cuja base de nome (sem sufixo
     numerico, ex: 'yamagoochie0065' e 'yamagoochie65' -> 'yamagoochie') e partilhada
-    por pelo menos `min_cluster_size` alvos -- mesma logica da deteçao automatica
+    por pelo menos `min_cluster_size` alvos, mesma logica da deteçao automatica
     (validator.py), mas sem limite de tempo e reaplicada a quem ja esta na fila (ex:
     passou a validacao antes desta deteçao existir, ou nao foi apanhado por outra
     razao). Usado pela analise manual da fila (tecla 'a' no ecra de revisao)."""
@@ -269,7 +269,7 @@ def reject_targets_as_heuristic(
     connection: sqlite3.Connection, nation_ids: Iterable[str], reason: str, detail: str, now_iso: str
 ) -> int:
     """Rejeita em bloco os alvos indicados (usado ao confirmar uma sugestao da analise
-    manual da fila). So afeta quem ainda estiver 'queued' nesse momento -- protege
+    manual da fila). So afeta quem ainda estiver 'queued' nesse momento; protege
     contra a rara corrida com o emissor a despachar um deles entretanto. Devolve
     quantos foram mesmo rejeitados."""
     count = 0
@@ -309,7 +309,7 @@ def mark_target_rejected(
     detail: str | None = None,
 ) -> None:
     """`heuristic=True` marca uma rejeicao por deteçao de padrao (nome bloqueado, alt,
-    lote gerado) em vez de um facto direto da API -- essas sao as unicas revisiveis e
+    lote gerado) em vez de um facto direto da API; essas sao as unicas revisiveis e
     reversiveis no ecra de revisao do dashboard (tecla 'v'). `detail` e a chave do
     "cluster" dentro dessa razao (ex: a base partilhada, ou as palavras repetidas)."""
     connection.execute(
@@ -336,7 +336,7 @@ def count_targets_by_rejection_category(connection: sqlite3.Connection, category
 
 
 def list_rejection_clusters(connection: sqlite3.Connection, category: str) -> list[sqlite3.Row]:
-    """Agrupa as rejeicoes de uma categoria por (razao, detalhe) -- ex: "provavel lote
+    """Agrupa as rejeicoes de uma categoria por (razao, detalhe), ex: "provavel lote
     gerado" + "grand,prix" e um cluster, separado de "provavel lote gerado" + "card,coletor"."""
     return connection.execute(
         "SELECT status_reason, rejection_detail, COUNT(*) AS n, MAX(validated_at) AS latest_at "
@@ -350,7 +350,7 @@ def revert_targets_by_rejection_group(
     connection: sqlite3.Connection, status_reason: str, detail: str | None, now_iso: str
 ) -> int:
     """Devolve ao estado 'discovered' todos os alvos de um cluster de rejeicao (tecla
-    Enter no ecra de revisao) -- para serem revalidados do zero. Devolve quantos alvos
+    Enter no ecra de revisao), para serem revalidados do zero. Devolve quantos alvos
     foram repostos."""
     detail_clause = "rejection_detail IS NULL" if detail is None else "rejection_detail = ?"
     where_params = (TargetStatus.REJECTED.value, "heuristic", status_reason)
@@ -393,7 +393,7 @@ def list_queued_targets(connection: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def set_target_priority(connection: sqlite3.Connection, nation_id: str, priority: bool, now_iso: str) -> None:
-    """So mexe em `priority` -- nunca em `queued_at`, para nao alterar a posicao do
+    """So mexe em `priority`, nunca em `queued_at`, para nao alterar a posicao do
     alvo dentro da sua fatia FIFO. So aplica a quem ainda estiver 'queued' nesse
     momento, para nao reviver um alvo que o emissor ja tenha despachado entretanto."""
     connection.execute(
@@ -419,7 +419,7 @@ def toggle_target_pin(connection: sqlite3.Connection, nation_id: str, now_iso: s
 
 def list_expired_unprioritized_queued_targets(connection: sqlite3.Connection, cutoff_iso: str) -> list[sqlite3.Row]:
     """Alvos 'queued' sem prioridade (bandeira) nem fixacao manual, em fila desde antes
-    de `cutoff_iso` -- saem aos 6h por omissao."""
+    de `cutoff_iso`: saem aos 6h por omissao."""
     return connection.execute(
         "SELECT nation_id, nation_name FROM targets "
         "WHERE status = ? AND priority = 0 AND pinned_at IS NULL AND queued_at <= ?",
@@ -429,7 +429,7 @@ def list_expired_unprioritized_queued_targets(connection: sqlite3.Connection, cu
 
 def list_expired_prioritized_queued_targets(connection: sqlite3.Connection, cutoff_iso: str) -> list[sqlite3.Row]:
     """Alvos 'queued' com prioridade (bandeira) ou fixacao manual, em fila desde antes
-    de `cutoff_iso` -- saem aos 8h em vez de 6h."""
+    de `cutoff_iso`: saem aos 8h em vez de 6h."""
     return connection.execute(
         "SELECT nation_id, nation_name FROM targets "
         "WHERE status = ? AND (priority != 0 OR pinned_at IS NOT NULL) AND queued_at <= ?",
@@ -439,7 +439,7 @@ def list_expired_prioritized_queued_targets(connection: sqlite3.Connection, cuto
 
 def mark_targets_expired(connection: sqlite3.Connection, nation_ids: Iterable[str], reason: str, now_iso: str) -> int:
     """Rejeita (rejection_category='expired') quem excedeu o tempo maximo de espera na
-    fila. So afeta quem ainda estiver 'queued' nesse momento -- protege contra a corrida
+    fila. So afeta quem ainda estiver 'queued' nesse momento; protege contra a corrida
     com o emissor a despachar um deles entretanto. Devolve quantos foram mesmo expirados."""
     count = 0
     for nation_id in nation_ids:

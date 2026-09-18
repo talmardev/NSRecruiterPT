@@ -59,12 +59,12 @@ def extract_name_base(nation_id: str) -> str:
 
 
 # Partilhado entre a deteçao automatica (validator.py, janela de 30 dias) e a analise
-# manual da fila (dashboard.py, sem limite de tempo) -- bases muito curtas ficam de
+# manual da fila (dashboard.py, sem limite de tempo): bases muito curtas ficam de
 # fora para nao gerar falsos positivos em nomes genericos.
 MIN_NAME_BASE_LENGTH = 3
 
 # Partilhado entre a deteçao automatica (validator.py, janela de 1h) e a analise
-# manual da fila (dashboard.py, sem limite de tempo) -- o mesmo limiar qualitativo
+# manual da fila (dashboard.py, sem limite de tempo): o mesmo limiar qualitativo
 # para o que conta como sobreposicao suspeita de palavras.
 MIN_SHARED_NAME_TOKENS = 2
 

@@ -1,7 +1,7 @@
 """Emissor: envia telegramas de recrutamento respeitando o cooldown entre envios.
 
 Um unico worker, um alvo de cada vez. Revalida tgcanrecruit imediatamente antes
-de cada envio -- um pedido de validacao custa muito menos do que desperdicar um
+de cada envio: um pedido de validacao custa muito menos do que desperdicar um
 slot inteiro de cooldown a enviar para quem ja nao pode receber.
 """
 from __future__ import annotations
@@ -26,7 +26,7 @@ _IDLE_POLL_INTERVAL_SECONDS = 2.0
 _WAIT_CHECK_INTERVAL_SECONDS = 1.0
 
 # Mesmo perfil conservador do validador (validator.py) para falhas de API na
-# revalidacao pre-envio -- sem isto, um alvo que falha sempre da mesma forma fica
+# revalidacao pre-envio: sem isto, um alvo que falha sempre da mesma forma fica
 # preso a cabeca da fila (FIFO, um so worker) e martela a API sem pausa, o que
 # esgota o limite geral partilhado e bloqueia ate os envios a outras nacoes.
 _BACKOFF_SCHEDULE_SECONDS = (5.0, 10.0, 20.0)
@@ -70,7 +70,7 @@ async def _dispatch_one(
     try:
         can_still_recruit = await fetch_tgcanrecruit(client, nation_id, config.region)
     except NotFoundError:
-        # Permanente (a nacao deixou de existir entretanto) -- nao vale a pena gastar
+        # Permanente (a nacao deixou de existir entretanto), nao vale a pena gastar
         # as tentativas com backoff, que sao para falhas transitorias.
         db.mark_target_rejected(connection, nation_id, "nacao deixou de existir (404 na revalidacao)", now_iso)
         logger.info("Rejeitado na revalidacao final: %s (nacao ja nao existe).", row["nation_name"])
@@ -159,7 +159,7 @@ async def run_dispatcher(
         if runtime_status.shutdown_requested.is_set():
             break
 
-        # Escolhido so agora, depois do cooldown -- nao antes de esperar. O cooldown
+        # Escolhido so agora, depois do cooldown, nao antes de esperar. O cooldown
         # pode demorar ate send_interval_seconds (182s por omissao); se o alvo fosse
         # escolhido antes de esperar, um pin ou mudanca de prioridade feita durante essa
         # espera nunca influenciava o envio prestes a acontecer, so o seguinte.

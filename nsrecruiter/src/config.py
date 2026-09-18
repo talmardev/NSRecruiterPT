@@ -100,7 +100,7 @@ def load_config(env_path: Path | None = None) -> Config:
 
     if send_interval_seconds < MIN_SEND_INTERVAL_SECONDS:
         raise ConfigError(
-            f"SEND_INTERVAL_SECONDS nao pode ser inferior a {MIN_SEND_INTERVAL_SECONDS:.0f}s -- "
+            f"SEND_INTERVAL_SECONDS nao pode ser inferior a {MIN_SEND_INTERVAL_SECONDS:.0f}s: "
             "e o limite da plataforma para telegramas de recrutamento. O valor recomendado e 182."
         )
 

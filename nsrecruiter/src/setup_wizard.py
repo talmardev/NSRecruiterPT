@@ -37,20 +37,20 @@ _FIELDS = [
     ),
     _Field(
         "NS_NATION", "Nacao responsavel",
-        "A nacao que gere este script -- normalmente a tua, com autoridade de "
+        "A nacao que gere este script, normalmente a tua, com autoridade de "
         "Communications na regiao. Entra no User-Agent enviado em todos os pedidos.",
     ),
     _Field(
         "NS_CONTACT", "Contacto (opcional)",
         "Um email ou outra forma de te contactarem se algo correr mal com o script. "
-        "Podes deixar em branco -- a nacao acima ja chega para a API nao devolver 403.",
+        "Podes deixar em branco: a nacao acima ja chega para a API nao devolver 403.",
         optional=True,
     ),
     _Field(
         "NS_CLIENT_KEY", "Client Key",
         "Gerada por um oficial com autoridade de Communications na pagina de Regional "
         "Control da regiao. Uma unica chave por regiao, partilhada por todos os scripts "
-        "que a usem -- por isso o rate limit tambem e partilhado.",
+        "que a usem, por isso o rate limit tambem e partilhado.",
         secret=True,
     ),
     _Field(
@@ -61,14 +61,14 @@ _FIELDS = [
     _Field(
         "NS_SECRET_KEY", "Secret Key",
         "A segunda parte do que recebes ao enviar o telegrama para tag:api. "
-        "NUNCA a partilhes com ninguem -- quem a tiver pode enviar o teu telegrama a quem quiser.",
+        "NUNCA a partilhes com ninguem: quem a tiver pode enviar o teu telegrama a quem quiser.",
         secret=True,
     ),
     _Field(
         "PRIORITY_FLAG_COUNTRIES", "Bandeiras prioritarias (opcional)",
         "Nomes de bandeiras 'preset' de paises, separados por virgula (ex: Portugal,Brazil), "
         "que saltam para o topo da fila de envio quando uma nacao as tiver selecionada. So "
-        "funciona para bandeiras preset -- nunca para bandeiras carregadas (upload). "
+        "funciona para bandeiras preset, nunca para bandeiras carregadas (upload). "
         "Deixa em branco para desativar.",
         optional=True,
     ),
@@ -193,7 +193,7 @@ def run_setup_wizard(env_path: Path) -> bool:
 
     console.print(
         Panel(
-            "Vamos configurar o NSRecruiter. Nada disto sai do teu computador -- "
+            "Vamos configurar o NSRecruiter. Nada disto sai do teu computador: "
             f"fica guardado em [bold]{env_path}[/bold], que nunca deve ser commitado "
             "nem partilhado.",
             title="Configuracao do NSRecruiter",
@@ -208,7 +208,7 @@ def run_setup_wizard(env_path: Path) -> bool:
     _print_summary(collected)
     console.print()
     if not Confirm.ask("Gravar esta configuracao?", default=True):
-        console.print("[yellow]Configuracao cancelada -- nada foi alterado.[/yellow]")
+        console.print("[yellow]Configuracao cancelada: nada foi alterado.[/yellow]")
         return False
 
     _write_env_file(env_path, collected)

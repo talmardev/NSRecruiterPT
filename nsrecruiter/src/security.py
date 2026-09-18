@@ -10,5 +10,5 @@ def mask_secret(value: str) -> str:
         return "*" * len(value)
     # ASCII simples de proposito: consolas Windows com codepage legado (e ficheiros de
     # log abertos fora de um editor UTF-8) trocam reticencias unicode por um caractere
-    # de substituicao ilegivel -- reticencias '...' nunca tem esse risco.
+    # de substituicao ilegivel; reticencias '...' nunca tem esse risco.
     return f"{value[:_VISIBLE_CHARS]}...{value[-_VISIBLE_CHARS:]}"

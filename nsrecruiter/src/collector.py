@@ -23,7 +23,7 @@ _FOUNDING_NATION_PATTERN = re.compile(r"@@([^@]+)@@")
 
 # Perfil de retry conservador confirmado com o utilizador: ate 3 tentativas,
 # 5s -> 10s -> 20s. Ao fim delas o coletor no passa para polling em vez de
-# desistir -- e o "fallback" pedido nas regras da plataforma.
+# desistir: e o "fallback" pedido nas regras da plataforma.
 _SSE_RECONNECT_BACKOFF_SECONDS = (5.0, 10.0, 20.0)
 _SSE_MAX_CONSECUTIVE_FAILURES = 3
 _SSE_RETRY_COOLDOWN_SECONDS = 300.0
@@ -58,7 +58,7 @@ async def _run_sse_once(
 
         if event.event == "replay-gap":
             logger.warning(
-                "O servidor nao conseguiu reenviar eventos desde o ultimo id -- "
+                "O servidor nao conseguiu reenviar eventos desde o ultimo id: "
                 "algumas fundacoes podem ter sido perdidas durante a interrupcao."
             )
             continue
@@ -83,7 +83,7 @@ async def _poll_fallback_once(connection: sqlite3.Connection, client: NsApiClien
 
 async def _recheck_queued_flags(connection: sqlite3.Connection, client: NsApiClient, config: Config) -> None:
     """Reavalia a bandeira de quem ja esta 'queued'. Sem isto, a prioridade de um alvo
-    ficava decidida para sempre no momento da validacao inicial -- nunca mais mudava,
+    ficava decidida para sempre no momento da validacao inicial; nunca mais mudava,
     mesmo que a nacao trocasse de bandeira entretanto (a fila pode ter horas de
     backlog) ou que PRIORITY_FLAG_COUNTRIES fosse atualizado depois. So corre se a
     funcionalidade estiver ativa, e nunca mexe em queued_at (nao pode alterar a
@@ -144,7 +144,7 @@ async def run_collector(
             continue
 
         logger.warning(
-            "SSE indisponivel apos %d tentativas -- a passar para polling de fallback durante %.0fs.",
+            "SSE indisponivel apos %d tentativas; a passar para polling de fallback durante %.0fs.",
             consecutive_failures,
             _SSE_RETRY_COOLDOWN_SECONDS,
         )

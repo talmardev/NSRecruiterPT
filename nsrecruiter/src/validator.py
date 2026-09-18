@@ -26,7 +26,7 @@ _BACKOFF_SCHEDULE_SECONDS = (5.0, 10.0, 20.0)
 _MAX_VALIDATION_ATTEMPTS = 3
 _IDLE_POLL_INTERVAL_SECONDS = 2.0
 
-# Padroes bloqueados no nome (substring, minusculas) -- nunca se envia nada a estas
+# Padroes bloqueados no nome (substring, minusculas): nunca se envia nada a estas
 # nacoes, decidido com o utilizador. Verificado antes de qualquer pedido a API, para
 # nem gastar uma validacao com elas.
 _BLOCKED_NAME_SUBSTRINGS = ("facist", "facista", "fascista", "nazi")
@@ -40,7 +40,7 @@ def _matched_blocked_substring(nation_id: str) -> str | None:
 
 
 # Deteta provaveis alts: nomes que so diferem no sufixo numerico (ex: "yamagoochie0065"
-# e "yamagoochie65"), descobertos dentro da mesma janela de tempo -- decidido com o
+# e "yamagoochie65"), descobertos dentro da mesma janela de tempo, decidido com o
 # utilizador. Bases muito curtas ficam de fora para nao gerar falsos positivos em
 # nomes genericos (limiar em MIN_NAME_BASE_LENGTH, partilhado com a analise manual).
 _ALT_NAME_LOOKBACK_DAYS = 30.0
@@ -52,7 +52,7 @@ def _alt_lookback_cutoff_iso() -> str:
 
 
 # Deteta lotes gerados a partir de listas externas (ex: "2018_azerbaijan_grand_prix",
-# "2018_german_grand_prix" -- nomes de corridas de Formula 1): nao partilham uma base
+# "2018_german_grand_prix", nomes de corridas de Formula 1): nao partilham uma base
 # comum como os alts acima, mas repetem 2+ palavras distintivas em pouco tempo.
 # Janela curta (1h, nao dias) e exigir 2+ palavras (nao 1) foi decidido com o
 # utilizador para minimizar o risco de rejeitar coincidencias entre jogadores reais.
@@ -133,7 +133,7 @@ async def _validate_one(
         else:
             can_recruit, flag_url = await fetch_tgcanrecruit(client, nation_id, config.region), None
     except NotFoundError:
-        # Permanente (a nacao deixou de existir entretanto) -- nao vale a pena gastar
+        # Permanente (a nacao deixou de existir entretanto), nao vale a pena gastar
         # as tentativas com backoff, que sao para falhas transitorias.
         db.mark_target_rejected(connection, nation_id, "nacao deixou de existir (404 na validacao)", now_iso)
         logger.info("Rejeitado %s: nacao ja nao existe.", row["nation_name"])
