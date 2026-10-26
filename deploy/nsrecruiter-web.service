@@ -1,0 +1,35 @@
+# Painel web do NSRecruiter (so leitura) a escutar na rede local do Raspberry Pi.
+# Arranca com o Pi e volta sozinho depois de uma falha ou de um corte de luz.
+#
+# Instalar, a partir de ~/NSRecruiter:
+#   sudo cp deploy/nsrecruiter-web.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now nsrecruiter-web
+#
+# Ver o estado e o URL real em que ficou:
+#   systemctl status nsrecruiter-web
+#   journalctl -u nsrecruiter-web -n 20
+#
+# Se o projeto nao estiver em /home/piadmin/NSRecruiter, ajustar User,
+# WorkingDirectory e ExecStart.
+
+[Unit]
+Description=NSRecruiter painel web (so leitura)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Tem de ser o utilizador que corre a aplicacao: a base de dados esta em modo WAL
+# e ate a leitura precisa de aceder ao ficheiro -shm.
+User=piadmin
+# O .env e o data/nsrecruiter.db sao procurados a partir daqui.
+WorkingDirectory=/home/piadmin/NSRecruiter
+ExecStart=/home/piadmin/NSRecruiter/.venv/bin/python -m nsrecruiter.web.comando --host 0.0.0.0 --no-browser
+Restart=always
+RestartSec=5
+# Sem isto o journalctl so mostra a saida quando o processo termina.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
