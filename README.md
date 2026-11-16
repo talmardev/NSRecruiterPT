@@ -71,7 +71,7 @@ Três componentes independentes, coordenados por uma fila em SQLite:
 - **Validador**: confirma `tgcanrecruit`, exclui quem já está na região, e rejeita nomes bloqueados, prováveis alts e prováveis lotes gerados.
 - **Emissor**: um envio de cada vez, revalidando imediatamente antes de cada um.
 
-Um alvo demasiado tempo na fila sem ser enviado expira automaticamente: 6 horas por omissão, 8 horas com prioridade por bandeira ou fixação manual. Só corre uma instância de cada vez (lockfile em `data/nsrecruiter.lock`), já que a Client Key é partilhada por toda a região. Tudo o que persiste (base de dados, lockfile, logs) está em `data/`, fora do controlo de versões.
+Um alvo demasiado tempo na fila sem ser enviado expira automaticamente: 6 horas por omissão, 8 horas com prioridade por bandeira ou fixação manual. Se passar uma hora sem aparecer nenhuma nação nova, ou se algum componente falhar, a aplicação reinicia-se sozinha ao fim de 30 segundos; só a tecla `q` e o `Ctrl+C` a terminam. Só corre uma instância de cada vez (lockfile em `data/nsrecruiter.lock`), já que a Client Key é partilhada por toda a região. Tudo o que persiste (base de dados, lockfile, logs) está em `data/`, fora do controlo de versões.
 
 ## Licença
 

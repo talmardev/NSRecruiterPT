@@ -12,7 +12,7 @@ import sqlite3
 
 from nsrecruiter import db
 from nsrecruiter.api.client import NsApiClient
-from nsrecruiter.api.exceptions import NotFoundError, NsApiError
+from nsrecruiter.api.exceptions import GeneralRateLimitedError, NetworkError, NotFoundError, NsApiError
 from nsrecruiter.api.ratelimiter import TelegramRateLimiter
 from nsrecruiter.api.shards import fetch_tgcanrecruit
 from nsrecruiter.api.telegrams import send_telegram
@@ -31,6 +31,10 @@ _WAIT_CHECK_INTERVAL_SECONDS = 1.0
 # esgota o limite geral partilhado e bloqueia ate os envios a outras nacoes.
 _BACKOFF_SCHEDULE_SECONDS = (5.0, 10.0, 20.0)
 _MAX_REVALIDATION_ATTEMPTS = 3
+
+# Rede em baixo ou limite geral atingido: a falha e nossa, nao do alvo. Espera-se e
+# tenta-se outra vez, sem contar tentativas, para nao esvaziar a fila durante um corte.
+_TRANSIENT_RETRY_SECONDS = 20.0
 
 
 def _next_target(
@@ -74,6 +78,13 @@ async def _dispatch_one(
         # as tentativas com backoff, que sao para falhas transitorias.
         db.mark_target_rejected(connection, nation_id, "nacao deixou de existir (404 na revalidacao)", now_iso)
         logger.info("Rejeitado na revalidacao final: %s (nacao ja nao existe).", row["nation_name"])
+        return
+    except (NetworkError, GeneralRateLimitedError) as exc:
+        logger.warning(
+            "Sem acesso a API ao revalidar %s (%s); nova tentativa em %.0fs.",
+            row["nation_name"], exc, _TRANSIENT_RETRY_SECONDS,
+        )
+        await runtime_status.sleep_or_shutdown(_TRANSIENT_RETRY_SECONDS)
         return
     except NsApiError as exc:
         attempts = row["attempts"] + 1
@@ -133,6 +144,9 @@ async def _dispatch_one(
         )
         return
 
+    # O alvo continua na fila: sem cooldown, o ciclo repetia o envio falhado sem pausa
+    # (ex: chave revogada, 403 para sempre). Um timeout pode ate ter chegado a enviar.
+    tg_limiter.mark_sent()
     db.insert_send_history(
         connection, nation_id, attempted_at, success=False, http_status=outcome.http_status,
         retry_after=None, error_reason=outcome.error_reason,

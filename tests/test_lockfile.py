@@ -18,26 +18,29 @@ def test_acquire_creates_lockfile_with_own_pid(tmp_path: Path) -> None:
         lock.release()
 
 
-def test_release_removes_lockfile(tmp_path: Path) -> None:
+def test_release_lets_another_instance_acquire(tmp_path: Path) -> None:
     path = tmp_path / "nsrecruiter.lock"
     lock = LockFile(path)
     lock.acquire()
     lock.release()
-    assert not path.exists()
+
+    with LockFile(path):
+        pass
 
 
-def test_second_acquire_with_live_pid_is_rejected(tmp_path: Path) -> None:
+def test_second_acquire_while_first_is_held_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "nsrecruiter.lock"
-    path.write_text(str(os.getpid()))
-    lock = LockFile(path)
-    with pytest.raises(InstanceAlreadyRunningError):
-        lock.acquire()
+    with LockFile(path):
+        with pytest.raises(InstanceAlreadyRunningError):
+            LockFile(path).acquire()
 
 
-def test_acquire_recovers_from_stale_lock(tmp_path: Path) -> None:
+@pytest.mark.parametrize("leftover_pid", [999_999, os.getpid()])
+def test_acquire_ignores_leftover_file_whatever_pid_it_holds(tmp_path: Path, leftover_pid: int) -> None:
+    """Depois de um corte de energia fica o ficheiro, sem lock. O PID la escrito pode
+    ate estar vivo (reutilizado por outro programa apos o reboot): nao pode impedir o arranque."""
     path = tmp_path / "nsrecruiter.lock"
-    stale_pid = 999_999
-    path.write_text(str(stale_pid))
+    path.write_text(str(leftover_pid))
     lock = LockFile(path)
     lock.acquire()
     try:
@@ -51,4 +54,6 @@ def test_context_manager_releases_on_exception(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError):
         with LockFile(path):
             raise RuntimeError("falha proposital")
-    assert not path.exists()
+
+    with LockFile(path):
+        pass

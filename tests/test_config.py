@@ -125,3 +125,19 @@ def test_repr_never_exposes_full_secret(monkeypatch: pytest.MonkeyPatch, tmp_pat
     text = repr(config)
     assert REQUIRED_ENV["NS_SECRET_KEY"] not in text
     assert REQUIRED_ENV["NS_CLIENT_KEY"] not in text
+
+
+def test_load_config_env_file_fills_in_a_variable_that_is_set_but_empty(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Um NS_REGION= vazio (do .env.example) ja carregado neste processo nao pode tapar o
+    valor que o assistente grava a seguir no .env."""
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("NS_REGION", "")
+    env_path = tmp_path / ".env"
+    env_path.write_text("NS_REGION=Regiao Do Ficheiro\nNS_NATION=Outra\n", encoding="utf-8")
+
+    config = load_config(env_path=env_path)
+
+    assert config.region == "Regiao Do Ficheiro"
+    assert config.nation == "Testlandia"  # uma variavel ja preenchida continua a mandar

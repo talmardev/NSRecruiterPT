@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import logging
 import sys
+import time
 from dataclasses import replace
 
 from rich.prompt import Confirm
@@ -20,6 +21,10 @@ from nsrecruiter.setup_wizard import run_setup_wizard
 EXIT_OK = 0
 EXIT_CONFIG_ERROR = 1
 EXIT_LOCK_ERROR = 2
+
+# Pausa antes de voltar a arrancar depois de uma falha, para nao martelar a API se a
+# falha se repetir logo no arranque.
+_RESTART_DELAY_SECONDS = 30.0
 
 logger = logging.getLogger("nsrecruiter.cli")
 
@@ -129,10 +134,26 @@ def run_main(dry_run: bool = False, verbose: bool = False, force_setup: bool = F
             log_buffer = new_log_buffer()
             setup_logging_for_dashboard(config.log_dir, config.log_level, _secrets_from_config(config), log_buffer)
             logger.info("NSRecruiter a arrancar. Regiao: %s. Nacao: %s.", config.region, config.nation)
-            try:
-                asyncio.run(run_app(config, log_buffer, dry_run=dry_run))
-            except KeyboardInterrupt:
-                logger.info("Interrompido pelo utilizador (Ctrl+C).")
+            # Qualquer falha (ou o vigia de silencio do runtime) reinicia tudo do zero, no
+            # mesmo processo e sem largar o lockfile. So a tecla q e o Ctrl+C saem.
+            while True:
+                try:
+                    asyncio.run(run_app(config, log_buffer, dry_run=dry_run))
+                    break
+                except KeyboardInterrupt:
+                    logger.info("Interrompido pelo utilizador (Ctrl+C).")
+                    break
+                except Exception as exc:
+                    logger.exception("Falha: %s A reiniciar dentro de %.0fs.", exc, _RESTART_DELAY_SECONDS)
+                    print(
+                        f"NSRecruiter falhou ({exc!r}). A reiniciar dentro de "
+                        f"{_RESTART_DELAY_SECONDS:.0f}s; Ctrl+C para sair.",
+                        file=sys.stderr,
+                    )
+                    try:
+                        time.sleep(_RESTART_DELAY_SECONDS)
+                    except KeyboardInterrupt:
+                        break
     except InstanceAlreadyRunningError as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_LOCK_ERROR

@@ -170,7 +170,8 @@ def test_principal_repara_e_liberta_o_lockfile(
 
     assert codigo == reparar_bd.EXIT_OK
     assert "Copia de seguranca" in capsys.readouterr().out
-    assert not (tmp_path / "nsrecruiter.lock").exists()
+    with LockFile(tmp_path / "nsrecruiter.lock"):
+        pass
     assert _query_do_validador(caminho) == 1
 
 

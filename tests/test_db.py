@@ -360,7 +360,8 @@ def test_revert_targets_by_rejection_group_restores_whole_cluster(tmp_path: Path
         row["nation_id"]: row
         for row in connection.execute("SELECT * FROM targets").fetchall()
     }
-    assert rows["2018_azerbaijan_grand_prix"]["status"] == "discovered"
+    assert rows["2018_azerbaijan_grand_prix"]["status"] == "queued"
+    assert rows["2018_azerbaijan_grand_prix"]["queued_at"] == "2026-09-08T01:00:00+00:00"
     assert rows["2018_azerbaijan_grand_prix"]["status_reason"] is None
     assert rows["2018_azerbaijan_grand_prix"]["rejection_category"] is None
     # o outro cluster nao deve ser afetado
@@ -377,7 +378,7 @@ def test_revert_targets_by_rejection_group_handles_null_detail(tmp_path: Path) -
 
     assert reverted == 1
     row = connection.execute("SELECT status FROM targets WHERE nation_id = 'a'").fetchone()
-    assert row["status"] == "discovered"
+    assert row["status"] == "queued"
 
 
 def test_find_queued_token_share_pairs_finds_matches_regardless_of_time_gap(tmp_path: Path) -> None:

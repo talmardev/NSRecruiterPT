@@ -411,3 +411,90 @@ def test_dispatcher_respects_a_pin_made_during_the_cooldown_wait(tmp_path: Path)
         assert sent_to == ["segundo"], f"devia ter enviado ao alvo fixado durante a espera, enviou a {sent_to}"
 
     asyncio.run(scenario())
+
+
+def test_dispatcher_starts_cooldown_after_a_failed_send(tmp_path: Path) -> None:
+    """Um envio recusado (ex: 403 por chave revogada) deixa o alvo na fila. Sem cooldown,
+    o ciclo repetia o mesmo envio sem pausa e inundava a API."""
+    send_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal send_count
+        if "q=tgcanrecruit" in str(request.url):
+            return httpx.Response(200, content=b'<NATION id="alvo"><TGCANRECRUIT>1</TGCANRECRUIT></NATION>')
+        if dict(request.url.params).get("a") == "sendTG":
+            send_count += 1
+            return httpx.Response(403, content=b"")
+        return httpx.Response(200, content=b"<UNKNOWN/>")
+
+    async def scenario() -> None:
+        connection = db.connect(tmp_path / "test.db")
+        db.init_schema(connection)
+        _seed_one_queued_target(connection)
+
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        api_client = NsApiClient("UA/1.0 (nation:Teste)", GeneralRateLimiter(), http_client=http_client)
+        tg_limiter = TelegramRateLimiter(interval_seconds=60.0, clock=time.monotonic)
+        config = _config(tmp_path, send_interval_seconds=60.0)
+        runtime_status = RuntimeStatus()
+
+        task = asyncio.create_task(
+            run_dispatcher(connection, api_client, tg_limiter, config, runtime_status, dry_run=False)
+        )
+        try:
+            assert await _run_until(lambda: send_count >= 1), "nunca tentou enviar"
+            await asyncio.sleep(0.3)
+            row = connection.execute("SELECT status FROM targets WHERE nation_id = 'alvo'").fetchone()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await http_client.aclose()
+            connection.close()
+
+        assert send_count == 1, f"repetiu o envio falhado {send_count} vezes sem esperar o cooldown"
+        assert row["status"] == "queued"
+        assert tg_limiter.seconds_until_next_send() > 50
+
+    asyncio.run(scenario())
+
+
+def test_dispatcher_keeps_target_queued_through_a_network_outage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rede em baixo na revalidacao nao e culpa do alvo: nao conta tentativas nem o
+    rejeita, por muitas vezes que falhe (um corte de DNS esvaziava a fila)."""
+    monkeypatch.setattr(dispatcher_module, "_TRANSIENT_RETRY_SECONDS", 0.01)
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        raise httpx.ConnectError("getaddrinfo failed")
+
+    async def scenario() -> None:
+        connection = db.connect(tmp_path / "test.db")
+        db.init_schema(connection)
+        _seed_one_queued_target(connection)
+
+        http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        api_client = NsApiClient("UA/1.0 (nation:Teste)", GeneralRateLimiter(), http_client=http_client)
+        tg_limiter = TelegramRateLimiter(interval_seconds=0.05, clock=time.monotonic)
+        config = _config(tmp_path, send_interval_seconds=0.05)
+        runtime_status = RuntimeStatus()
+
+        task = asyncio.create_task(
+            run_dispatcher(connection, api_client, tg_limiter, config, runtime_status, dry_run=False)
+        )
+        try:
+            assert await _run_until(lambda: request_count >= 6), "nao voltou a tentar durante o corte"
+            row = connection.execute("SELECT status, attempts FROM targets WHERE nation_id = 'alvo'").fetchone()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            await http_client.aclose()
+            connection.close()
+
+        assert row["status"] == "queued"
+        assert row["attempts"] == 0
+
+    asyncio.run(scenario())

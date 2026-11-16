@@ -13,6 +13,10 @@ import httpx
 
 FOUNDING_STREAM_URL = "https://www.nationstates.net/api/founding"
 
+# Sem limite de leitura, uma ligacao morta sem fecho limpo (router reiniciado) ficava
+# a espera para sempre. O ReadTimeout e um httpx.HTTPError: o coletor reconecta.
+_READ_TIMEOUT_SECONDS = 90.0
+
 
 @dataclass
 class SseEvent:
@@ -31,7 +35,9 @@ async def iter_sse_events(
     if last_event_id:
         headers["Last-Event-ID"] = last_event_id
 
-    async with http_client.stream("GET", FOUNDING_STREAM_URL, headers=headers, timeout=None) as response:
+    async with http_client.stream(
+        "GET", FOUNDING_STREAM_URL, headers=headers, timeout=httpx.Timeout(15.0, read=_READ_TIMEOUT_SECONDS)
+    ) as response:
         response.raise_for_status()
 
         data_lines: list[str] = []

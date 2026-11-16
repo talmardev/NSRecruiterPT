@@ -349,18 +349,19 @@ def list_rejection_clusters(connection: sqlite3.Connection, category: str) -> li
 def revert_targets_by_rejection_group(
     connection: sqlite3.Connection, status_reason: str, detail: str | None, now_iso: str
 ) -> int:
-    """Devolve ao estado 'discovered' todos os alvos de um cluster de rejeicao (tecla
-    Enter no ecra de revisao), para serem revalidados do zero. Devolve quantos alvos
-    foram repostos."""
+    """Poe na fila ('queued') todos os alvos de um cluster de rejeicao (tecla Enter no
+    ecra de revisao). Nao voltam a 'discovered': o validador aplicava as mesmas regras
+    de padrao e rejeitava-os outra vez. O emissor revalida tgcanrecruit antes de cada
+    envio. Devolve quantos alvos foram repostos."""
     detail_clause = "rejection_detail IS NULL" if detail is None else "rejection_detail = ?"
     where_params = (TargetStatus.REJECTED.value, "heuristic", status_reason)
     if detail is not None:
         where_params += (detail,)
     cursor = connection.execute(
         "UPDATE targets SET status = ?, status_reason = NULL, rejection_category = NULL, "
-        "rejection_detail = NULL, validated_at = NULL, attempts = 0, updated_at = ? "
+        "rejection_detail = NULL, queued_at = ?, validated_at = ?, attempts = 0, updated_at = ? "
         f"WHERE status = ? AND rejection_category = ? AND status_reason = ? AND {detail_clause}",
-        (TargetStatus.DISCOVERED.value, now_iso, *where_params),
+        (TargetStatus.QUEUED.value, now_iso, now_iso, now_iso, *where_params),
     )
     return cursor.rowcount
 
@@ -487,6 +488,11 @@ def insert_send_history(
     )
 
 
+def get_last_discovered_at(connection: sqlite3.Connection) -> str | None:
+    row = connection.execute("SELECT discovered_at FROM targets ORDER BY rowid DESC LIMIT 1").fetchone()
+    return row["discovered_at"] if row else None
+
+
 def get_last_successful_send_at(connection: sqlite3.Connection) -> str | None:
     row = connection.execute(
         "SELECT attempted_at FROM send_history WHERE success = 1 ORDER BY attempted_at DESC LIMIT 1"
@@ -506,13 +512,6 @@ def count_sent_total(connection: sqlite3.Connection) -> int:
     return row["n"]
 
 
-def count_send_attempts_since(connection: sqlite3.Connection, since_iso: str) -> int:
-    row = connection.execute(
-        "SELECT COUNT(*) AS n FROM send_history WHERE attempted_at >= ?", (since_iso,)
-    ).fetchone()
-    return row["n"]
-
-
 def count_send_attempts_total(connection: sqlite3.Connection) -> int:
     row = connection.execute("SELECT COUNT(*) AS n FROM send_history").fetchone()
     return row["n"]
@@ -527,14 +526,6 @@ def failure_reason_breakdown(connection: sqlite3.Connection) -> list[sqlite3.Row
     return connection.execute(
         "SELECT COALESCE(error_reason, 'desconhecido') AS reason, COUNT(*) AS n "
         "FROM send_history WHERE success = 0 GROUP BY reason ORDER BY n DESC"
-    ).fetchall()
-
-
-def rejection_reason_breakdown(connection: sqlite3.Connection) -> list[sqlite3.Row]:
-    return connection.execute(
-        "SELECT COALESCE(status_reason, 'desconhecido') AS reason, COUNT(*) AS n FROM targets "
-        "WHERE status = ? GROUP BY reason ORDER BY n DESC",
-        (TargetStatus.REJECTED.value,),
     ).fetchall()
 
 

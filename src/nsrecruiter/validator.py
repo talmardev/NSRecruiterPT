@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 from nsrecruiter import db
 from nsrecruiter.api.client import NsApiClient
-from nsrecruiter.api.exceptions import NotFoundError, NsApiError
+from nsrecruiter.api.exceptions import GeneralRateLimitedError, NetworkError, NotFoundError, NsApiError
 from nsrecruiter.api.shards import fetch_tgcanrecruit, fetch_tgcanrecruit_and_flag, flag_matches_presets
 from nsrecruiter.config import Config
 from nsrecruiter.models import (
@@ -25,6 +25,10 @@ logger = logging.getLogger("nsrecruiter.validator")
 _BACKOFF_SCHEDULE_SECONDS = (5.0, 10.0, 20.0)
 _MAX_VALIDATION_ATTEMPTS = 3
 _IDLE_POLL_INTERVAL_SECONDS = 2.0
+
+# Rede em baixo ou limite geral atingido: a falha e nossa, nao do alvo. Espera-se e
+# tenta-se outra vez, sem contar tentativas.
+_TRANSIENT_RETRY_SECONDS = 20.0
 
 # Padroes bloqueados no nome (substring, minusculas): nunca se envia nada a estas
 # nacoes, decidido com o utilizador. Verificado antes de qualquer pedido a API, para
@@ -137,6 +141,13 @@ async def _validate_one(
         # as tentativas com backoff, que sao para falhas transitorias.
         db.mark_target_rejected(connection, nation_id, "nacao deixou de existir (404 na validacao)", now_iso)
         logger.info("Rejeitado %s: nacao ja nao existe.", row["nation_name"])
+        return
+    except (NetworkError, GeneralRateLimitedError) as exc:
+        logger.warning(
+            "Sem acesso a API ao validar %s (%s); nova tentativa em %.0fs.",
+            row["nation_name"], exc, _TRANSIENT_RETRY_SECONDS,
+        )
+        await asyncio.sleep(_TRANSIENT_RETRY_SECONDS)
         return
     except NsApiError as exc:
         attempts = row["attempts"] + 1

@@ -124,10 +124,10 @@ def test_validator_rejects_probable_alt_but_lets_the_first_of_the_burst_through(
         # depois uma da outra. A primeira tem de passar normalmente; so a segunda
         # (e seguintes) e que deve ser rejeitada como provavel alt.
         db.insert_discovered_target(
-            connection, "yamagoochie0065", "Yamagoochie0065", TargetSource.SSE, "2026-09-08T00:00:00+00:00"
+            connection, "yamagoochie0065", "Yamagoochie0065", TargetSource.SSE, _minutes_ago_iso(10)
         )
         db.insert_discovered_target(
-            connection, "yamagoochie65", "Yamagoochie65", TargetSource.SSE, "2026-09-08T00:00:10+00:00"
+            connection, "yamagoochie65", "Yamagoochie65", TargetSource.SSE, _minutes_ago_iso(5)
         )
 
         http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -163,7 +163,7 @@ def test_validator_rejeita_rajada_no_mesmo_segundo_apesar_do_discovered_at_ident
     async def cenario():
         ligacao = db.connect(tmp_path / "test.db")
         db.init_schema(ligacao)
-        mesmo_instante = "2026-09-08T00:00:00+00:00"
+        mesmo_instante = _minutes_ago_iso(5)
         db.insert_discovered_target(ligacao, "alvo177", "Alvo177", TargetSource.SSE, mesmo_instante)
         db.insert_discovered_target(ligacao, "alvo178", "Alvo178", TargetSource.SSE, mesmo_instante)
 

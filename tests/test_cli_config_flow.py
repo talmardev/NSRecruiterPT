@@ -74,3 +74,30 @@ def test_missing_config_interactive_and_accepted_runs_wizard_then_reloads(
         # diretamente, sem passar pelo monkeypatch.
         for key in required_env:
             os.environ.pop(key, None)
+
+
+def test_run_main_restarts_after_a_crash_and_stops_on_clean_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    for key, value in {
+        "NS_REGION": "Portugal",
+        "NS_NATION": "Teste",
+        "NS_CLIENT_KEY": "clientkey1234567890",
+        "NS_TELEGRAM_ID": "123456789",
+        "NS_SECRET_KEY": "secretkeyabcdef1234567890",
+    }.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(cli, "_RESTART_DELAY_SECONDS", 0.0)
+    runs = 0
+
+    async def _fake_run_app(*args: object, **kwargs: object) -> None:
+        nonlocal runs
+        runs += 1
+        if runs < 3:
+            raise RuntimeError("falha proposital")
+
+    monkeypatch.setattr(cli, "run_app", _fake_run_app)
+
+    assert cli.run_main() == cli.EXIT_OK
+    assert runs == 3

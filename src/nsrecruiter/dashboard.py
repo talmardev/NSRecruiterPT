@@ -94,7 +94,6 @@ class DashboardState:
     sent_last_hour: int
     projection_24h: int
     failure_breakdown: list[tuple[str, int]]
-    rejection_breakdown: list[tuple[str, int]]
 
     log_entries: list[LogEntry]
 
@@ -273,7 +272,6 @@ def gather_state(
         sent_last_hour=sent_last_hour,
         projection_24h=projection_24h,
         failure_breakdown=[(row["reason"], row["n"]) for row in db.failure_reason_breakdown(connection)],
-        rejection_breakdown=[(row["reason"], row["n"]) for row in db.rejection_reason_breakdown(connection)],
         log_entries=list(log_entries),
         queue_view_active=queue_view_active,
         queue_rows=db.list_queued_targets(connection) if queue_view_active else [],
@@ -884,7 +882,7 @@ async def run_dashboard(
                 status_reason, detail = rejection_review.selected_rejected_key
                 reverted = db.revert_targets_by_rejection_group(connection, status_reason, detail, utc_now_iso())
                 logger.info(
-                    "Repostas %d nacao(oes) do grupo '%s' (%s) para revalidar.",
+                    "Repostas %d nacao(oes) do grupo '%s' (%s) na fila.",
                     reverted,
                     status_reason,
                     detail or "-",

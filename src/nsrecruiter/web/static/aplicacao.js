@@ -13,14 +13,11 @@
     rate_limited: "LIMITADO",
   };
 
-  var ORDEM_FUNIL = ["discovered", "queued", "validating", "sending", "sent", "failed", "rejected"];
+  var ORDEM_FUNIL = ["discovered", "queued", "sent", "rejected"];
   var ROTULOS_FUNIL = {
     discovered: "Descobertos",
     queued: "Na fila",
-    validating: "A validar",
-    sending: "A enviar",
     sent: "Enviados",
-    failed: "Falhados",
     rejected: "Rejeitados",
   };
 

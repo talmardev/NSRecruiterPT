@@ -15,6 +15,8 @@ from pathlib import Path
 logger = logging.getLogger("nsrecruiter.backup")
 
 _FORMATO_DATA_NOME_FICHEIRO = "%Y%m%d_%H%M%S"
+# Copias guardadas na pasta; as mais antigas sao apagadas a cada backup novo.
+BACKUPS_A_MANTER = 7
 
 
 def _nome_ficheiro_backup(caminho_bd: Path, agora: datetime) -> str:
@@ -30,6 +32,10 @@ def criar_backup(ligacao: sqlite3.Connection, caminho_bd: Path, pasta_backup: Pa
         ligacao.backup(ligacao_destino)
     finally:
         ligacao_destino.close()
+    # So ficheiros com o nosso formato de nome (data_hora), que ordena por idade.
+    copias = sorted(pasta_backup.glob(f"{caminho_bd.stem}_????????_??????{caminho_bd.suffix}"))
+    for antiga in copias[:-BACKUPS_A_MANTER]:
+        antiga.unlink(missing_ok=True)
     return destino
 
 

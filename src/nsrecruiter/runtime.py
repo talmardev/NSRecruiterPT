@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import time
 from collections import deque
 
@@ -11,7 +12,8 @@ import httpx
 from nsrecruiter import db
 from nsrecruiter.api.client import NsApiClient
 from nsrecruiter.api.ratelimiter import GeneralRateLimiter, TelegramRateLimiter
-from nsrecruiter.api.shards import fetch_region_nations
+from nsrecruiter.api.exceptions import NsApiError
+from nsrecruiter.api.shards import fetch_new_nations, fetch_region_nations
 from nsrecruiter.backup import correr_backups_periodicos
 from nsrecruiter.collector import run_collector
 from nsrecruiter.config import Config
@@ -26,6 +28,37 @@ from nsrecruiter.validator import run_validator_loop
 logger = logging.getLogger("nsrecruiter.runtime")
 
 _DISPATCHER_GRACE_PERIOD_SECONDS = 20.0
+
+# O NationStates funda dezenas de nacoes por hora: uma hora sem nenhuma descoberta
+# quer dizer que o coletor ficou preso, por isso reinicia-se tudo (ver cli.run_main).
+_NO_DISCOVERY_RESTART_SECONDS = 3600.0
+_WATCHDOG_CHECK_SECONDS = 60.0
+
+
+class NoNewNationsError(Exception):
+    """Passou demasiado tempo sem nenhuma nacao nova: pede um reinicio."""
+
+
+async def watch_for_silence(
+    connection: sqlite3.Connection, api_client: NsApiClient, started_at_unix: float
+) -> None:
+    """Termina com NoNewNationsError se nao houver descobertas ha demasiado tempo.
+    Conta a partir do arranque, para nao disparar logo depois de uma paragem longa."""
+    while True:
+        await asyncio.sleep(_WATCHDOG_CHECK_SECONDS)
+        last_iso = db.get_last_discovered_at(connection)
+        last_unix = max(started_at_unix, iso_to_unix_timestamp(last_iso) if last_iso else 0.0)
+        silence = time.time() - last_unix
+        if silence <= _NO_DISCOVERY_RESTART_SECONDS:
+            continue
+        # Rede em baixo (ex: a noite inteira) tambem da silencio, mas reiniciar nao
+        # resolve nada: o coletor volta sozinho quando a rede voltar. So se reinicia
+        # se a API responde e mesmo assim nao chega nada, sinal de coletor preso.
+        try:
+            await fetch_new_nations(api_client)
+        except NsApiError:
+            continue
+        raise NoNewNationsError(f"Nenhuma nacao nova ha {silence / 60:.0f} minutos, com a API a responder.")
 
 
 async def run_app(config: Config, log_buffer: "deque[LogEntry]", dry_run: bool = False) -> None:
@@ -69,6 +102,7 @@ async def run_app(config: Config, log_buffer: "deque[LogEntry]", dry_run: bool =
         run_validator_loop(connection, api_client, config, region_members), name="validador"
     )
     expiry_task = asyncio.create_task(run_queue_expiry_loop(connection), name="expirador")
+    watchdog_task = asyncio.create_task(watch_for_silence(connection, api_client, time.time()), name="vigia")
     dispatcher_task = asyncio.create_task(
         run_dispatcher(connection, api_client, tg_limiter, config, runtime_status, dry_run), name="emissor"
     )
@@ -91,7 +125,7 @@ async def run_app(config: Config, log_buffer: "deque[LogEntry]", dry_run: bool =
             name="backup",
         )
 
-    tasks = {collector_task, validator_task, expiry_task, dispatcher_task, dashboard_task}
+    tasks = {collector_task, validator_task, expiry_task, watchdog_task, dispatcher_task, dashboard_task}
     if tarefa_backup is not None:
         tasks.add(tarefa_backup)
     try:
@@ -101,13 +135,14 @@ async def run_app(config: Config, log_buffer: "deque[LogEntry]", dry_run: bool =
         for finished in done:
             exc = finished.exception()
             if exc is not None:
-                raise exc
+                raise exc  # registado no log e seguido de reinicio em cli.run_main
     finally:
         logger.info("A encerrar de forma limpa...")
         runtime_status.request_shutdown()
         collector_task.cancel()
         validator_task.cancel()
         expiry_task.cancel()
+        watchdog_task.cancel()
         if tarefa_backup is not None:
             tarefa_backup.cancel()
         if not dashboard_task.done():
@@ -121,7 +156,7 @@ async def run_app(config: Config, log_buffer: "deque[LogEntry]", dry_run: bool =
             except asyncio.CancelledError:
                 pass
         await asyncio.gather(
-            collector_task, validator_task, expiry_task, dashboard_task, dispatcher_task,
+            collector_task, validator_task, expiry_task, watchdog_task, dashboard_task, dispatcher_task,
             *([tarefa_backup] if tarefa_backup is not None else []),
             return_exceptions=True,
         )

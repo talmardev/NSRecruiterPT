@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from nsrecruiter import db
-from nsrecruiter.backup import correr_backups_periodicos, criar_backup
+from nsrecruiter.backup import BACKUPS_A_MANTER, correr_backups_periodicos, criar_backup
 from nsrecruiter.models import TargetSource
 
 
@@ -111,3 +111,21 @@ def test_correr_backups_periodicos_regista_e_sobrevive_a_pasta_de_backup_impossi
     ligacao.close()
 
     assert "Falha ao criar backup" in caplog.text
+
+
+def test_criar_backup_apaga_as_copias_mais_antigas_e_so_as_suas(tmp_path: Path) -> None:
+    caminho_bd = tmp_path / "nsrecruiter.db"
+    ligacao = _ligacao(caminho_bd)
+    pasta_backup = tmp_path / "backups"
+    pasta_backup.mkdir()
+    antigas = [pasta_backup / f"nsrecruiter_202601{dia:02d}_000000.db" for dia in range(1, 10)]
+    for antiga in antigas:
+        antiga.write_bytes(b"")
+    alheio = pasta_backup / "nsrecruiter_notas.db"
+    alheio.write_bytes(b"")
+
+    destino = criar_backup(ligacao, caminho_bd, pasta_backup)
+    ligacao.close()
+
+    restantes = sorted(p.name for p in pasta_backup.iterdir())
+    assert restantes == sorted([a.name for a in antigas[-(BACKUPS_A_MANTER - 1):]] + [destino.name, alheio.name])

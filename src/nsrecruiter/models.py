@@ -8,17 +8,13 @@ from enum import Enum
 class TargetStatus(str, Enum):
     DISCOVERED = "discovered"
     QUEUED = "queued"
-    VALIDATING = "validating"
-    SENDING = "sending"
     SENT = "sent"
-    FAILED = "failed"
     REJECTED = "rejected"
 
 
 class TargetSource(str, Enum):
     SSE = "sse"
     POLL = "poll"
-    MANUAL = "manual"
 
 
 class AppState(str, Enum):

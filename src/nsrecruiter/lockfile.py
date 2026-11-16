@@ -1,77 +1,68 @@
-"""Lockfile de instancia unica (impede duas instancias em simultaneo)."""
+"""Lockfile de instancia unica (impede duas instancias em simultaneo).
+
+O que conta e um lock do sistema operativo sobre o ficheiro, nao o PID la escrito: o
+sistema liberta-o sozinho quando o processo morre (crash, corte de energia). Um PID
+gravado podia, depois de um reboot, pertencer a outro programa qualquer e impedir o
+arranque. O PID fica no ficheiro so para consulta.
+"""
 from __future__ import annotations
 
-import ctypes
 import os
 import sys
 from pathlib import Path
 from types import TracebackType
+from typing import IO
+
+# No Windows o lock impede a leitura dos bytes trancados: tranca-se um byte longe do
+# conteudo para o PID continuar legivel.
+_LOCK_OFFSET = 1 << 20
 
 
 class InstanceAlreadyRunningError(Exception):
     """Ja existe outra instancia a correr, segundo o lockfile."""
 
 
-def _is_process_alive(pid: int) -> bool:
-    if pid <= 0:
-        return False
+def _lock_or_raise(handle: IO[str]) -> None:
+    """Lock exclusivo sem esperar. Lanca OSError se outro processo ja o tiver."""
     if sys.platform == "win32":
-        process_query_limited_information = 0x1000
-        handle = ctypes.windll.kernel32.OpenProcess(process_query_limited_information, False, pid)
-        if not handle:
-            return False
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+        import msvcrt
+
+        handle.seek(_LOCK_OFFSET)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
 class LockFile:
     def __init__(self, path: Path) -> None:
         self._path = path
-        self._locked = False
+        self._handle: IO[str] | None = None
 
     def acquire(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        handle = os.fdopen(os.open(self._path, os.O_RDWR | os.O_CREAT), "r+", encoding="utf-8")
         try:
-            fd = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            self._handle_existing_lock()
-            fd = os.open(self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(str(os.getpid()))
-        self._locked = True
-
-    def _handle_existing_lock(self) -> None:
-        try:
-            existing_pid_text = self._path.read_text(encoding="utf-8").strip()
-            existing_pid = int(existing_pid_text) if existing_pid_text else -1
-        except (OSError, ValueError):
-            existing_pid = -1
-
-        if _is_process_alive(existing_pid):
+            _lock_or_raise(handle)
+        except OSError as exc:
+            handle.close()
             raise InstanceAlreadyRunningError(
-                "Ja existe outra instancia do NSRecruiter em execucao "
-                f"(PID {existing_pid}). Termina-a antes de iniciar uma nova: "
-                "as regras da plataforma exigem uma unica instancia por chave."
-            )
-        self._path.unlink(missing_ok=True)
+                "Ja existe outra instancia do NSRecruiter em execucao. Termina-a antes de "
+                "iniciar uma nova: as regras da plataforma exigem uma unica instancia por chave."
+            ) from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(str(os.getpid()))
+        handle.flush()
+        self._handle = handle
 
     def release(self) -> None:
-        if not self._locked:
-            return
-        try:
-            current_pid_text = self._path.read_text(encoding="utf-8").strip()
-            if current_pid_text == str(os.getpid()):
-                self._path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        self._locked = False
+        # O ficheiro fica no disco de proposito: apaga-lo abria uma corrida com outro
+        # processo que o tivesse acabado de abrir. Fechar ja liberta o lock.
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
 
     def __enter__(self) -> LockFile:
         self.acquire()
